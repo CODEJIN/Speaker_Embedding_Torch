@@ -1,23 +1,24 @@
 import torch
-import yaml, logging
+import logging
 
-with open('Hyper_Parameter.yaml') as f:
-    hp_Dict = yaml.load(f, Loader=yaml.Loader)
+# I don't use hyper parameter dict in here
+# because several moudles become a submodule
+# on other repository,
 
 class Encoder(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, mel_dims, lstm_size, lstm_stacks, embedding_size):
         super(Encoder, self).__init__()   
         self.layer_Dict = torch.nn.ModuleDict()
         self.layer_Dict['LSTM'] = torch.nn.LSTM(
-            input_size= hp_Dict['Sound']['Mel_Dim'],
-            hidden_size= hp_Dict['Encoder']['LSTM']['Sizes'],
-            num_layers= hp_Dict['Encoder']['LSTM']['Stacks'],
+            input_size= mel_dims,
+            hidden_size= lstm_size,
+            num_layers= lstm_stacks,
             bias= True,
             batch_first= True,
             )
         self.layer_Dict['Linear'] = Linear(
-            in_features= hp_Dict['Encoder']['LSTM']['Sizes'],
-            out_features= hp_Dict['Encoder']['Embedding_Size'],
+            in_features= lstm_size,
+            out_features= embedding_size,
             )
 
     def forward(self, mels):
@@ -53,14 +54,14 @@ class GE2E_Loss(torch.nn.Module):
         self.layer_Dict['Consine_Similarity'] = torch.nn.CosineSimilarity(dim= 2)
         self.layer_Dict['Cross_Entroy_Loss'] = torch.nn.CrossEntropyLoss()
 
-    def forward(self, embeddings, device):
+    def forward(self, embeddings, pattern_per_Speaker, device):
         '''
         embeddings: [Batch, Emb_dim]
         The target of softmax is always 0.
         '''
         x = embeddings.view(
-            embeddings.size(0) // hp_Dict['Train']['Batch']['Train']['Pattern_per_Speaker'],
-            hp_Dict['Train']['Batch']['Train']['Pattern_per_Speaker'],
+            embeddings.size(0) // pattern_per_Speaker,
+            pattern_per_Speaker,
             -1
             )   # [Speakers, Pattern_per_Speaker, Emb_dim]
 

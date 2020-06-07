@@ -75,7 +75,12 @@ class Trainer:
             )
         
     def Model_Generate(self):
-        self.model = Encoder().to(device)
+        self.model = Encoder(
+            mel_dims= hp_Dict['Sound']['Mel_Dim'],
+            lstm_size= hp_Dict['Encoder']['LSTM']['Sizes'],
+            lstm_stacks= hp_Dict['Encoder']['LSTM']['Stacks'],
+            embedding_size= hp_Dict['Encoder']['Embedding_Size'],
+            ).to(device)
         self.criterion = GE2E_Loss().to(device)
         self.optimizer = RAdam(
             params= self.model.parameters(),
@@ -94,7 +99,7 @@ class Trainer:
     def Train_Step(self, mels):
         mels = mels.to(device)
         embeddings = self.model(mels)
-        loss = self.criterion(embeddings, device)
+        loss = self.criterion(embeddings, hp_Dict['Train']['Batch']['Train']['Pattern_per_Speaker'], device)
                 
         self.optimizer.zero_grad()
         loss.backward()        
@@ -138,7 +143,7 @@ class Trainer:
     def Evaluation_Step(self, mels):
         mels = mels.to(device)
         embeddings = self.model(mels)
-        loss = self.criterion(embeddings, device)
+        loss = self.criterion(embeddings, hp_Dict['Train']['Batch']['Eval']['Pattern_per_Speaker'], device)
 
         return embeddings, loss
 
