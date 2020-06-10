@@ -12,8 +12,8 @@ from scipy.io import wavfile
 from random import sample
 from sklearn.manifold import TSNE
 
-from Modules import Encoder, GE2E_Loss
-from Datasets import Train_Dataset, Dev_Dataset, Train_Collater, Dev_Collater
+from Modules import Encoder, GE2E_Loss, Normalize
+from Datasets import Train_Dataset, Dev_Dataset, Train_Collater, Dev_Collater, Inference_Collater
 from Radam import RAdam
 
 with open('Hyper_Parameter.yaml') as f:
@@ -55,6 +55,7 @@ class Trainer:
 
         train_Collater = Train_Collater()
         dev_Collater = Dev_Collater()
+        inference_Collater = Inference_Collater()
 
         self.dataLoader_Dict = {}
         self.dataLoader_Dict['Train'] = torch.utils.data.DataLoader(
@@ -73,12 +74,20 @@ class Trainer:
             num_workers= hp_Dict['Train']['Num_Workers'],
             pin_memory= True
             )
+        self.dataLoader_Dict['Inference'] = torch.utils.data.DataLoader(
+            dataset= dev_Dataset,
+            shuffle= True,
+            collate_fn= inference_Collater,
+            batch_size= hp_Dict['Train']['Batch']['Eval']['Speaker'],
+            num_workers= hp_Dict['Train']['Num_Workers'],
+            pin_memory= True
+            )
         
     def Model_Generate(self):
         self.model = Encoder(
             mel_dims= hp_Dict['Sound']['Mel_Dim'],
             lstm_size= hp_Dict['Encoder']['LSTM']['Sizes'],
-            lstm_stacks= hp_Dict['Encoder']['LSTM']['Stacks'],
+            lstm_stacks= hp_Dict['Encoder']['LSTM']['Stacks'],            
             embedding_size= hp_Dict['Encoder']['Embedding_Size'],
             ).to(device)
         self.criterion = GE2E_Loss().to(device)
@@ -132,6 +141,7 @@ class Trainer:
 
             if self.steps % hp_Dict['Train']['Evaluation_Interval'] == 0:
                 self.Evaluation_Epoch()
+                self.Inference_Epoch()
             
             if self.steps >= hp_Dict['Train']['Max_Step']:
                 return
@@ -159,12 +169,46 @@ class Trainer:
 
         losses = torch.stack(losses)
         self.writer.add_scalar('evaluation/loss', losses.sum(), self.steps)
-            
-        embeddings = torch.cat(embeddings, dim= 0)        
-        datasets = [dataset for dataset_List in datasets for dataset in dataset_List]
-        speakers = [speaker for speaker_list in speakers for speaker in speaker_list]
         
-        scatters = TSNE().fit_transform(embeddings[:10 * hp_Dict['Train']['Batch']['Eval']['Pattern_per_Speaker']].cpu().numpy())
+        self.TSNE(
+            embeddings = torch.cat(embeddings, dim= 0),
+            datasets = [dataset for dataset_List in datasets for dataset in dataset_List],
+            speakers = [speaker for speaker_list in speakers for speaker in speaker_list],
+            tag= 'evaluation/tsne'
+            )
+
+        self.model.train()
+
+
+  
+    @torch.no_grad()
+    def Inference_Step(self, mels):
+        return Normalize(
+            self.model(mels.to(device)),
+            samples= hp_Dict['Train']['Inference']['Samples']
+            )
+
+    def Inference_Epoch(self):
+        logging.info('(Steps: {}) Start inference.'.format(self.steps))
+
+        self.model.eval()
+
+        embeddings, datasets, speakers = zip(*[
+            (self.Inference_Step(mels), datasets, speakers)
+            for step, (mels, datasets, speakers) in tqdm(enumerate(self.dataLoader_Dict['Inference'], 1), desc='[Inference]')
+            ])
+        
+        self.TSNE(
+            embeddings= torch.cat(embeddings, dim= 0),
+            datasets= [dataset for dataset_List in datasets for dataset in dataset_List],
+            speakers= [speaker for speaker_list in speakers for speaker in speaker_list],
+            tag= 'infernce/tsne'
+            )
+        
+        self.model.train()
+
+    def TSNE(self, embeddings, datasets, speakers, tag):
+        scatters = TSNE(n_components=2, random_state= 0).fit_transform(embeddings[:10 * hp_Dict['Train']['Batch']['Eval']['Pattern_per_Speaker']].cpu().numpy())
         scatters = np.reshape(scatters, [-1, hp_Dict['Train']['Batch']['Eval']['Pattern_per_Speaker'], 2])
 
         fig = plt.figure(figsize=(8, 8))
@@ -176,11 +220,8 @@ class Trainer:
             plt.scatter(scatter[:, 0], scatter[:, 1], label= '{}.{}'.format(dataset, speaker))
         plt.legend()
         plt.tight_layout()
-        self.writer.add_figure('evaluation/tsne', fig, self.steps)
+        self.writer.add_figure(tag, fig, self.steps)
         plt.close(fig)
-
-        self.model.train()
-
 
     def Load_Checkpoint(self):
         state_Dict = torch.load(
@@ -223,8 +264,9 @@ class Trainer:
             )
         self.train_Losses = 0.0
 
-        if hp_Dict['Train']['Initial_Inference']:
+        if hp_Dict['Train']['Initial_Inference'] and self.steps == 0:
             self.Evaluation_Epoch()
+            self.Inference_Epoch()
 
         while self.steps < hp_Dict['Train']['Max_Step']:
             try:

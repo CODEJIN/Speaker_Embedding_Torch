@@ -1,0 +1,56 @@
+Sound:
+    Spectrogram_Dim: 1025
+    Mel_Dim: 80
+    Frame_Length: 1024
+    Frame_Shift: 256
+    Sample_Rate: 16000
+    Max_Abs_Mel: 4
+
+Encoder:
+    Embedding_Size: 256
+    LSTM:
+        Sizes: 256
+        Stacks: 3
+
+Train:
+    Use_Pattern_Cache: false
+    Train_Pattern:
+        Path: 'C:/Pattern/AutoVC.Pattern/Train'
+        Metadata_File: 'METADATA.PICKLE'
+    Eval_Pattern:
+        Path: 'C:/Pattern/AutoVC.Pattern/Eval'
+        Metadata_File: 'METADATA.PICKLE'
+    Num_Workers: 2  # Each epoch is based on the number of speakers, so using a lot of workers slows down the pattern generating speed.
+    Batch:
+        Train:
+            Speaker: 64
+            Pattern_per_Speaker: 15
+        Eval:
+            Speaker: 64
+            Pattern_per_Speaker: 40
+    Frame_Length:
+        Min: 140
+        Max: 180
+    Inference:
+        Samples: 5
+        Frame_Length: 64
+        Overlap_Length: 32
+    Learning_Rate:
+        Initial: 1.0e-3
+        Epsilon: 1.0e-7
+        Decay_Step: 10000
+        Decay_Rate: 0.5
+    ADAM:
+        Beta1: 0.9
+        Beta2: 0.999
+        Epsilon: 1.0e-8
+    Gradient_Norm: 1.0    
+    Max_Step: 100000
+    Checkpoint_Save_Interval: 1000
+    Logging_Interval: 100
+    Evaluation_Interval: 1000
+    Initial_Inference: true
+
+Checkpoint_Path: 'D:/SE.Results/Checkpoint'
+Log_Path: 'D:/SE.Results/Log'
+Device: '0'

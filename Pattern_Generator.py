@@ -11,7 +11,7 @@ with open('Hyper_Parameter.yaml') as f:
     hp_Dict = yaml.load(f, Loader=yaml.Loader)
 
 using_Extension = [x.upper() for x in ['.wav', '.m4a', '.flac']]
-top_DB_Dict = {'VCTK': 15, 'VC1': 23, 'Libri': 23, 'CMUA': 60}  # VC1 and Libri is from 'https://github.com/CorentinJ/Real-Time-Voice-Cloning'
+top_DB_Dict = {'VCTK': 15, 'VC1': 23, 'VC2': 23, 'Libri': 23, 'CMUA': 60}  # VC1 and Libri is from 'https://github.com/CorentinJ/Real-Time-Voice-Cloning'
 
 
 def Mel_Generate(path, top_db= 60):
@@ -35,20 +35,27 @@ def Mel_Generate(path, top_db= 60):
 def Pattern_File_Generate(path, speaker, dataset, tag= '', eval= False):
     pattern_Path = hp_Dict['Train']['Eval_Pattern' if eval else 'Train_Pattern']['Path']
 
-    os.makedirs(os.path.join(pattern_Path, dataset).replace('\\', '/'), exist_ok= True)    
-    
-    new_Pattern_Dict = {
-        'Mel': Mel_Generate(path, top_DB_Dict[dataset]),
-        'Speaker': speaker,
-        'Dataset': dataset,
-        }
     pickle_Path = '{}.{}{}.{}.PICKLE'.format(
         dataset,
         speaker,
         '.{}'.format(tag) if tag != '' else tag,
         os.path.splitext(os.path.basename(path))[0]        
         )
-    pickle_Path = os.path.join(pattern_Path, dataset, pickle_Path).replace("\\", "/")    
+    pickle_Path = os.path.join(pattern_Path, dataset, pickle_Path).replace("\\", "/")
+
+    if os.path.exists(pickle_Path):
+        return
+
+    os.makedirs(os.path.join(pattern_Path, dataset).replace('\\', '/'), exist_ok= True)    
+    try:
+        new_Pattern_Dict = {
+            'Mel': Mel_Generate(path, top_DB_Dict[dataset]),
+            'Speaker': speaker,
+            'Dataset': dataset,
+            }
+    except Exception as e:
+        print('Error: {} in {}'.format(e, path))
+        return
     
     with open(pickle_Path, 'wb') as f:
         pickle.dump(new_Pattern_Dict, f, protocol=4)
@@ -96,6 +103,24 @@ def VC1_Info_Load(vc1_Path):
 
     print('VC1 info generated: {}'.format(len(vc1_File_Path_List)))
     return vc1_File_Path_List, vc1_Speaker_Dict
+
+def VC2_Info_Load(vc2_Path):
+    vc2_File_Path_List = []
+    for root, _, files in os.walk(vc2_Path):
+        for file in files:
+            wav_File_Path = os.path.join(root, file).replace('\\', '/')
+            if not os.path.splitext(wav_File_Path)[1].upper() in using_Extension:
+                continue
+            vc2_File_Path_List.append(wav_File_Path)
+    
+    vc2_Speaker_Dict = {
+        path: path.split('/')[-3].upper()
+        for path in vc2_File_Path_List
+        }
+
+    print('VC2 info generated: {}'.format(len(vc2_File_Path_List)))
+    return vc2_File_Path_List, vc2_Speaker_Dict
+
 
 def Libri_Info_Load(libri_Path):
     libri_File_Path_List = []
@@ -172,6 +197,7 @@ if __name__ == '__main__':
     argParser = argparse.ArgumentParser()
     argParser.add_argument("-vctk", "--vctk_path", required=False)
     argParser.add_argument("-vc1", "--vc1_path", required=False)
+    argParser.add_argument("-vc2", "--vc2_path", required=False)
     argParser.add_argument("-libri", "--libri_path", required=False)
     argParser.add_argument("-cmua", "--cmua_path", required=False)
 
@@ -195,7 +221,13 @@ if __name__ == '__main__':
         path_List.extend(vc1_File_Path_List)
         speaker_Dict.update(vc1_Speaker_Dict)
         dataset_Dict.update({path: 'VC1' for path in vc1_File_Path_List})
-        tag_Dict.update({path: '.{}'.format(path.split('/')[-2]) for path in vc1_File_Path_List})
+        tag_Dict.update({path: '{}'.format(path.split('/')[-2]) for path in vc1_File_Path_List})
+    if not args.vc2_path is None:
+        vc2_File_Path_List, vc2_Speaker_Dict = VC2_Info_Load(vc2_Path= args.vc2_path)
+        path_List.extend(vc2_File_Path_List)
+        speaker_Dict.update(vc2_Speaker_Dict)
+        dataset_Dict.update({path: 'VC2' for path in vc2_File_Path_List})
+        tag_Dict.update({path: '{}'.format(path.split('/')[-2]) for path in vc2_File_Path_List})
     if not args.libri_path is None:
         libri_File_Path_List, libri_Speaker_Dict = Libri_Info_Load(libri_Path= args.libri_path)
         path_List.extend(libri_File_Path_List)
@@ -222,7 +254,6 @@ if __name__ == '__main__':
             total= len(path_List)
             ):
             pass
-
     Metadata_Generate()
 
     if not args.vc1_test_path is None:
@@ -241,8 +272,3 @@ if __name__ == '__main__':
                 pass
 
         Metadata_Generate(eval= True)
-    
-
-# python Pattern_Generator.py -vctk D:\Pattern\ENG\VCTK -vc1 C:\Users\Heejo\Downloads\Vox1 -libri C:\Users\Heejo\Downloads\LibriTTS -cmua D:\Pattern\ENG\CMUA
-# python Pattern_Generator.py -vc1 C:\Users\Heejo\Downloads\Vox1
-# python Pattern_Generator.py -vc1t D:\vox1_test

@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-import yaml, librosa, pickle, os
+import yaml, pickle, os
 from random import sample
 
 with open('Hyper_Parameter.yaml') as f:
@@ -107,6 +107,32 @@ class Dev_Collater:
         return mels, datasets, speakers
 
 
+class Inference_Collater:
+    def __init__(self):
+        self.required_Length = \
+            hp_Dict['Train']['Inference']['Samples'] * \
+            (hp_Dict['Train']['Inference']['Frame_Length'] - hp_Dict['Train']['Inference']['Overlap_Length']) + \
+            hp_Dict['Train']['Inference']['Overlap_Length']
+
+    def __call__(self, batch):        
+        mels, datasets, speakers = [], [], []
+        for patterns in batch:
+            for mel, dataset, speaker in patterns:
+                mel = Correction(mel, self.required_Length)                
+                mel = np.stack([
+                    mel[index:index + hp_Dict['Train']['Inference']['Frame_Length']]
+                    for index in range(0, self.required_Length - hp_Dict['Train']['Inference']['Overlap_Length'], hp_Dict['Train']['Inference']['Frame_Length'] - hp_Dict['Train']['Inference']['Overlap_Length'])
+                    ])
+                mels.append(mel)
+                datasets.append(dataset)
+                speakers.append(speaker)
+
+        mels = torch.FloatTensor(np.vstack(mels)).transpose(2, 1)   # [Speakers * Samples, Mel_dim, Time]
+
+        return mels, datasets, speakers
+
+
+
 def Correction(mel, frame_Length):
     if mel.shape[0] > frame_Length:
         offset = np.random.randint(0, mel.shape[0] - frame_Length)
@@ -120,17 +146,20 @@ def Correction(mel, frame_Length):
             )
 
 
+
+
 if __name__ == "__main__":    
     dataLoader = torch.utils.data.DataLoader(
-        dataset= Train_Dataset(),
+        dataset= Dev_Dataset(),
         shuffle= True,
-        collate_fn= Train_Collater(),
-        batch_size= hp_Dict['Train']['Batch']['Train']['Speaker'],
+        collate_fn= Inference_Collater(),
+        # collate_fn= Dev_Collater(),
+        batch_size= hp_Dict['Train']['Batch']['Eval']['Speaker'],
         num_workers= hp_Dict['Train']['Num_Workers'],
         pin_memory= True
         )
 
     import time
     for x in dataLoader:
-        print(x.shape)
+        print(x[0].shape)
         time.sleep(2.0)

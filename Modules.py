@@ -8,14 +8,22 @@ import logging
 class Encoder(torch.nn.Module):
     def __init__(self, mel_dims, lstm_size, lstm_stacks, embedding_size):
         super(Encoder, self).__init__()   
+        self.lstm_stacks = lstm_stacks
+
         self.layer_Dict = torch.nn.ModuleDict()
-        self.layer_Dict['LSTM'] = torch.nn.LSTM(
-            input_size= mel_dims,
-            hidden_size= lstm_size,
-            num_layers= lstm_stacks,
-            bias= True,
-            batch_first= True,
+
+        self.layer_Dict['Prenet'] = Linear(
+            in_features= mel_dims,
+            out_features= lstm_size,
             )
+
+        for index in range(self.lstm_stacks):
+            self.layer_Dict['LSTM_{}'.format(index)] = torch.nn.LSTM(
+                input_size= lstm_size,
+                hidden_size= lstm_size,
+                bias= True,
+                batch_first= True
+                )
         self.layer_Dict['Linear'] = Linear(
             in_features= lstm_size,
             out_features= embedding_size,
@@ -24,11 +32,15 @@ class Encoder(torch.nn.Module):
     def forward(self, mels):
         '''
         mels: [Batch, Mel_dim, Time]
-        '''
-        self.layer_Dict['LSTM'].flatten_parameters()
+        '''        
+        for index in range(self.lstm_stacks):
+            self.layer_Dict['LSTM_{}'.format(index)].flatten_parameters()
 
-        x = mels.transpose(2, 1)   # [Batch, Time, Mel_dim]
-        x, _ = self.layer_Dict['LSTM'](x)   # [Batch, Time, LSTM_dim]
+            x = mels.transpose(2, 1)    # [Batch, Time, Mel_dim]
+            x = self.layer_Dict['Prenet'](x)    # [Batch, Time, LSTM_dim]
+        for index in range(self.lstm_stacks):
+            x = self.layer_Dict['LSTM_{}'.format(index)](x)[0] + \
+                (x if index < self.lstm_stacks - 1 else 0)    # [Batch, Time, LSTM_dim]
         return self.layer_Dict['Linear'](x[:, -1, :])   # [Batch, Emb_dim]
 
 class Linear(torch.nn.Linear):
@@ -59,6 +71,8 @@ class GE2E_Loss(torch.nn.Module):
         embeddings: [Batch, Emb_dim]
         The target of softmax is always 0.
         '''
+        embeddings = Normalize(embeddings, samples= 1)
+
         x = embeddings.view(
             embeddings.size(0) // pattern_per_Speaker,
             pattern_per_Speaker,
@@ -92,9 +106,17 @@ class GE2E_Loss(torch.nn.Module):
         return self.layer_Dict['Cross_Entroy_Loss'](logits, labels)
 
 
+def Normalize(embeddings, samples):
+    '''
+    embeddings: [Batch * Samples, Emb_dim]
+    '''
+    embeddings = embeddings.view(-1, samples, embeddings.size(1)).mean(dim= 1) # [Batch * Samples, Emb_dim] -> [Batch, Samples, Emb_dim] -> [Batch, Emb_dim]
+    return torch.nn.functional.normalize(embeddings, p=2, dim= 1)
+
+
 if __name__ == "__main__":
     encoder = Encoder().cuda()
-    loss = Loss().cuda()
+    loss = GE2E_Loss().cuda()
     mels = torch.randn(320, 80, 256).cuda()
     x = encoder(mels)
     x = loss(x)
