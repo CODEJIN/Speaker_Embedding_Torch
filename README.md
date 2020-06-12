@@ -71,7 +71,7 @@ At least, one or more of datasets must be used.
 * -vc1 <path>
     * Set the path of VoxCeleb1. VoxCeleb1's patterns are generated.
 * -vc2 <path>
-    * Set the path of VoxCeleb1. VoxCeleb2's patterns are generated.
+    * Set the path of VoxCeleb2. VoxCeleb2's patterns are generated.
 * -libri <path>
     * Set the path of LibriTTS. LibriTTS's patterns are generated.
 * -cmua <path>
