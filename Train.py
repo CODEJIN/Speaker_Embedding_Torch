@@ -201,7 +201,7 @@ class Trainer:
         self.TSNE(
             embeddings= torch.cat(embeddings, dim= 0),
             datasets= [dataset for dataset_List in datasets for dataset in dataset_List],
-            speakers= [speaker for speaker_list in speakers for speaker in speaker_list],
+            speakers= [speaker for speaker_List in speakers for speaker in speaker_List],
             tag= 'infernce/tsne'
             )
         
