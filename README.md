@@ -17,6 +17,9 @@ Qian, K., Zhang, Y., Chang, S., Yang, X., & Hasegawa-Johnson, M. (2019). Zero-sh
 * librosa >= 0.7.2
 * matplotlib >= 3.1.3
 
+* Optional for loss and t-SNE result check
+    * tensorboard >= 2.2.2
+
 # Used dataset
 
 * Currently uploaded code is compatible with the following datasets. The O mark to the left of the dataset name is the dataset actually used in the uploaded result. I used all datasets.
@@ -67,6 +70,8 @@ At least, one or more of datasets must be used.
     * Set the path of VCTK. VCTK's patterns are generated.
 * -vc1 <path>
     * Set the path of VoxCeleb1. VoxCeleb1's patterns are generated.
+* -vc2 <path>
+    * Set the path of VoxCeleb1. VoxCeleb2's patterns are generated.
 * -libri <path>
     * Set the path of LibriTTS. LibriTTS's patterns are generated.
 * -cmua <path>

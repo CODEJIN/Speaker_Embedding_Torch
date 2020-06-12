@@ -36,8 +36,8 @@ class Encoder(torch.nn.Module):
         for index in range(self.lstm_stacks):
             self.layer_Dict['LSTM_{}'.format(index)].flatten_parameters()
 
-            x = mels.transpose(2, 1)    # [Batch, Time, Mel_dim]
-            x = self.layer_Dict['Prenet'](x)    # [Batch, Time, LSTM_dim]
+        x = mels.transpose(2, 1)    # [Batch, Time, Mel_dim]
+        x = self.layer_Dict['Prenet'](x)    # [Batch, Time, LSTM_dim]
         for index in range(self.lstm_stacks):
             x = self.layer_Dict['LSTM_{}'.format(index)](x)[0] + \
                 (x if index < self.lstm_stacks - 1 else 0)    # [Batch, Time, LSTM_dim]
