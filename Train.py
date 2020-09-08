@@ -3,7 +3,7 @@ import numpy as np
 import logging, yaml, os, sys, argparse, time
 from tqdm import tqdm
 from collections import defaultdict
-from tensorboardX import SummaryWriter
+from Logger import Logger
 import matplotlib
 matplotlib.use('agg')
 matplotlib.rcParams['agg.path.chunksize'] = 10000
@@ -12,15 +12,19 @@ from scipy.io import wavfile
 from random import sample
 from sklearn.manifold import TSNE
 
-from Modules import Encoder, GE2E_Loss, Normalize
-from Datasets import Train_Dataset, Dev_Dataset, Train_Collater, Dev_Collater, Inference_Collater
+from Modules import GE2E, GE2E_Loss
+from Datasets import Dataset, Collater, Inference_Collater
+from Noam_Scheduler import Modified_Noam_Scheduler
 from Radam import RAdam
 
-with open('Hyper_Parameter.yaml') as f:
-    hp_Dict = yaml.load(f, Loader=yaml.Loader)
+from Arg_Parser import Recursive_Parse
+hp = Recursive_Parse(yaml.load(
+    open('Hyper_Parameters.yaml', encoding='utf-8'),
+    Loader=yaml.Loader
+    ))
 
-if not hp_Dict['Device'] is None:
-    os.environ['CUDA_VISIBLE_DEVICES']= hp_Dict['Device']
+if not hp.Device is None:
+    os.environ['CUDA_VISIBLE_DEVICES']= str(hp.Device)
 
 if not torch.cuda.is_available():
     device = torch.device('cpu')
@@ -30,8 +34,16 @@ else:
     torch.cuda.set_device(0)
 
 logging.basicConfig(
-        level=logging.INFO, stream=sys.stdout,
-        format="%(asctime)s (%(module)s:%(lineno)d) %(levelname)s: %(message)s")
+    level=logging.INFO, stream=sys.stdout,
+    format="%(asctime)s (%(module)s:%(lineno)d) %(levelname)s: %(message)s"
+    )
+
+if hp.Use_Mixed_Precision:
+    try:
+        from apex import amp
+    except:
+        logging.warn('There is no apex modules in the environment. Mixed precision does not work.')
+        hp.Use_Mixed_Precision = False
 
 class Trainer:
     def __init__(self, steps= 0):
@@ -41,109 +53,160 @@ class Trainer:
         self.Datset_Generate()
         self.Model_Generate()
 
-        self.writer = SummaryWriter(hp_Dict['Log_Path'])
+        self.scalar_Dict = {
+            'Train': defaultdict(float),
+            'Evaluation': defaultdict(float),
+            }
+
+        self.writer_Dict = {
+            'Train': Logger(os.path.join(hp.Log_Path, 'Train')),
+            'Evaluation': Logger(os.path.join(hp.Log_Path, 'Evaluation')),
+            }
 
         if self.steps > 0:
             self.Load_Checkpoint()
 
-
     def Datset_Generate(self):
-        train_Dataset = Train_Dataset()
-        dev_Dataset = Dev_Dataset()
-        logging.info('The number of train files = {}.'.format(len(train_Dataset)))
-        logging.info('The number of development files = {}.'.format(len(dev_Dataset)))
+        train_Dataset = Dataset(
+            pattern_path= hp.Train.Train_Pattern.Path,
+            metadata_file= hp.Train.Train_Pattern.Metadata_File,
+            pattern_per_speaker= hp.Train.Batch.Train.Pattern_per_Speaker,
+            use_cache= hp.Train.Use_Pattern_Cache
+            )
+        dev_Dataset = Dataset(
+            pattern_path= hp.Train.Eval_Pattern.Path,
+            metadata_file= hp.Train.Eval_Pattern.Metadata_File,
+            pattern_per_speaker= hp.Train.Batch.Eval.Pattern_per_Speaker,
+            use_cache= hp.Train.Use_Pattern_Cache
+            )
+        inference_Dataset = Dataset(
+            pattern_path= hp.Train.Eval_Pattern.Path,
+            metadata_file= hp.Train.Eval_Pattern.Metadata_File,
+            pattern_per_speaker= hp.Train.Batch.Eval.Pattern_per_Speaker,
+            num_speakers= 50,   #Maximum number by tensorboard.
+            use_cache= hp.Train.Use_Pattern_Cache
+            )
+        logging.info('The number of train speakers = {}.'.format(len(train_Dataset)))
+        logging.info('The number of development speakers = {}.'.format(len(dev_Dataset)))
 
-        train_Collater = Train_Collater()
-        dev_Collater = Dev_Collater()
-        inference_Collater = Inference_Collater()
+        collater = Collater(
+            min_frame_length= hp.Train.Frame_Length.Min,
+            max_frame_length= hp.Train.Frame_Length.Max
+            )
+        inference_Collater = Inference_Collater(
+            samples= hp.Train.Inference.Samples,
+            frame_length= hp.Train.Inference.Frame_Length,
+            overlap_length= hp.Train.Inference.Overlap_Length
+            )
 
         self.dataLoader_Dict = {}
         self.dataLoader_Dict['Train'] = torch.utils.data.DataLoader(
             dataset= train_Dataset,
             shuffle= True,
-            collate_fn= train_Collater,
-            batch_size= hp_Dict['Train']['Batch']['Train']['Speaker'],
-            num_workers= hp_Dict['Train']['Num_Workers'],
+            collate_fn= collater,
+            batch_size= hp.Train.Batch.Train.Speaker,
+            num_workers= hp.Train.Num_Workers,
             pin_memory= True
             )
         self.dataLoader_Dict['Dev'] = torch.utils.data.DataLoader(
             dataset= dev_Dataset,
             shuffle= True,
-            collate_fn= dev_Collater,
-            batch_size= hp_Dict['Train']['Batch']['Eval']['Speaker'],
-            num_workers= hp_Dict['Train']['Num_Workers'],
+            collate_fn= collater,
+            batch_size= hp.Train.Batch.Eval.Speaker,
+            num_workers= hp.Train.Num_Workers,
             pin_memory= True
             )
         self.dataLoader_Dict['Inference'] = torch.utils.data.DataLoader(
-            dataset= dev_Dataset,
+            dataset= inference_Dataset,
             shuffle= True,
             collate_fn= inference_Collater,
-            batch_size= hp_Dict['Train']['Batch']['Eval']['Speaker'],
-            num_workers= hp_Dict['Train']['Num_Workers'],
+            batch_size= hp.Train.Batch.Eval.Speaker,
+            num_workers= hp.Train.Num_Workers,
             pin_memory= True
             )
         
     def Model_Generate(self):
-        self.model = Encoder(
-            mel_dims= hp_Dict['Sound']['Mel_Dim'],
-            lstm_size= hp_Dict['Encoder']['LSTM']['Sizes'],
-            lstm_stacks= hp_Dict['Encoder']['LSTM']['Stacks'],            
-            embedding_size= hp_Dict['Encoder']['Embedding_Size'],
+        self.model = GE2E(
+            mel_dims= hp.Sound.Mel_Dim,
+            lstm_size= hp.GE2E.LSTM.Sizes,
+            lstm_stacks= hp.GE2E.LSTM.Stacks,
+            embedding_size= hp.GE2E.Embedding_Size,
             ).to(device)
         self.criterion = GE2E_Loss().to(device)
         self.optimizer = RAdam(
             params= self.model.parameters(),
-            lr= hp_Dict['Train']['Learning_Rate']['Initial'],
-            eps= hp_Dict['Train']['Learning_Rate']['Epsilon'],
+            lr= hp.Train.Learning_Rate.Initial,
+            betas= (hp.Train.ADAM.Beta1, hp.Train.ADAM.Beta2),
+            eps= hp.Train.ADAM.Epsilon,
+            weight_decay= hp.Train.Weight_Decay
             )
-        self.scheduler = torch.optim.lr_scheduler.StepLR(
+        self.scheduler = Modified_Noam_Scheduler(
             optimizer= self.optimizer,
-            step_size= hp_Dict['Train']['Learning_Rate']['Decay_Step'],
-            gamma= hp_Dict['Train']['Learning_Rate']['Decay_Rate'],
+            base= hp.Train.Learning_Rate.Base,
             )
+
+        if hp.Use_Mixed_Precision:
+            self.model, self.optimizer = amp.initialize(
+                models= self.model,
+                optimizers=self.optimizer
+                )
 
         logging.info(self.model)
 
 
     def Train_Step(self, mels):
+        loss_Dict = {}
+
         mels = mels.to(device)
         embeddings = self.model(mels)
-        loss = self.criterion(embeddings, hp_Dict['Train']['Batch']['Train']['Pattern_per_Speaker'], device)
+        loss_Dict['Embedding'] = self.criterion(embeddings, hp.Train.Batch.Train.Pattern_per_Speaker)
                 
         self.optimizer.zero_grad()
-        loss.backward()        
-        torch.nn.utils.clip_grad_norm_(
-            parameters= self.model.parameters(),
-            max_norm= hp_Dict['Train']['Gradient_Norm']
-            )
+        if hp.Use_Mixed_Precision:
+            with amp.scale_loss(loss_Dict['Embedding'], self.optimizer) as scaled_loss:
+                scaled_loss.backward()            
+            torch.nn.utils.clip_grad_norm_(
+                parameters= amp.master_params(self.optimizer),
+                max_norm= hp.Train.Gradient_Norm
+                )
+        else:
+            loss_Dict['Embedding'].backward()
+            torch.nn.utils.clip_grad_norm_(
+                parameters= self.model.parameters(),
+                max_norm= hp.Train.Gradient_Norm
+                )
         self.optimizer.step()
         self.scheduler.step()
           
         self.steps += 1
         self.tqdm.update(1)
 
-        self.train_Losses += loss
+        for tag, loss in loss_Dict.items():
+            self.scalar_Dict['Train']['Loss/{}'.format(tag)] += loss_Dict['Embedding']
 
-    def Train_Epoch(self):        
+    def Train_Epoch(self):
         for mels in self.dataLoader_Dict['Train']:
             self.Train_Step(mels)
             
-            if self.steps % hp_Dict['Train']['Checkpoint_Save_Interval'] == 0:
+            if self.steps % hp.Train.Checkpoint_Save_Interval == 0:
                 self.Save_Checkpoint()
 
-            if self.steps % hp_Dict['Train']['Logging_Interval'] == 0:
-                self.writer.add_scalar(
-                    'train/loss',
-                    self.train_Losses / hp_Dict['Train']['Logging_Interval'],
-                    self.steps
-                    )
-                self.train_Losses = 0.0
+            if self.steps % hp.Train.Logging_Interval == 0:
+                self.scalar_Dict['Train'] = {
+                    tag: loss / hp.Train.Logging_Interval
+                    for tag, loss in self.scalar_Dict['Train'].items()
+                    }
+                self.scalar_Dict['Train']['Learning_Rate'] = self.scheduler.get_last_lr()
+                self.writer_Dict['Train'].add_scalar_dict(self.scalar_Dict['Train'], self.steps)
+                self.scalar_Dict['Train'] = defaultdict(float)
 
-            if self.steps % hp_Dict['Train']['Evaluation_Interval'] == 0:
+            if self.steps % hp.Train.Evaluation_Interval == 0:
                 self.Evaluation_Epoch()
+
+            if self.steps % hp.Train.Inference_Interval == 0:
                 self.Inference_Epoch()
             
-            if self.steps >= hp_Dict['Train']['Max_Step']:
+            if self.steps >= hp.Train.Max_Step:
                 return
 
         self.epochs += 1
@@ -151,41 +214,39 @@ class Trainer:
     
     @torch.no_grad()
     def Evaluation_Step(self, mels):
+        loss_Dict = {}
+
         mels = mels.to(device)
         embeddings = self.model(mels)
-        loss = self.criterion(embeddings, hp_Dict['Train']['Batch']['Eval']['Pattern_per_Speaker'], device)
+        loss_Dict['Embedding'] = self.criterion(embeddings, hp.Train.Batch.Eval.Pattern_per_Speaker)
 
-        return embeddings, loss
+        for tag, loss in loss_Dict.items():
+            self.scalar_Dict['Evaluation']['Loss/{}'.format(tag)] += loss
 
     def Evaluation_Epoch(self):
         logging.info('(Steps: {}) Start evaluation.'.format(self.steps))
 
         self.model.eval()
 
-        embeddings, losses, datasets, speakers = zip(*[
-            (*self.Evaluation_Step(mels), datasets, speakers)
-            for step, (mels, datasets, speakers) in tqdm(enumerate(self.dataLoader_Dict['Dev'], 1), desc='[Evaluation]')
-            ])
+        for step, mels in tqdm(enumerate(self.dataLoader_Dict['Dev'], 1), desc='[Evaluation]'):
+            self.Evaluation_Step(mels)
 
-        losses = torch.stack(losses)
-        self.writer.add_scalar('evaluation/loss', losses.sum(), self.steps)
-        
-        self.TSNE(
-            embeddings = torch.cat(embeddings, dim= 0),
-            datasets = [dataset for dataset_List in datasets for dataset in dataset_List],
-            speakers = [speaker for speaker_list in speakers for speaker in speaker_list],
-            tag= 'evaluation/tsne'
-            )
+        self.scalar_Dict['Evaluation'] = {
+            tag: loss / step
+            for tag, loss in self.scalar_Dict['Evaluation'].items()
+            }
+        self.writer_Dict['Evaluation'].add_scalar_dict(self.scalar_Dict['Evaluation'], self.steps)
+        self.writer_Dict['Evaluation'].add_histogram_model(self.model, self.steps, delete_keywords=['layer_Dict', 'layer'])
+        self.scalar_Dict['Evaluation'] = defaultdict(float)
 
         self.model.train()
-
 
   
     @torch.no_grad()
     def Inference_Step(self, mels):
-        return Normalize(
-            self.model(mels.to(device)),
-            samples= hp_Dict['Train']['Inference']['Samples']
+        return self.model.inference(
+            mels= mels.to(device),
+            samples= hp.Train.Inference.Samples
             )
 
     def Inference_Epoch(self):
@@ -193,52 +254,55 @@ class Trainer:
 
         self.model.eval()
 
-        embeddings, datasets, speakers = zip(*[
-            (self.Inference_Step(mels), datasets, speakers)
-            for step, (mels, datasets, speakers) in tqdm(enumerate(self.dataLoader_Dict['Inference'], 1), desc='[Inference]')
+        embeddings, speakers = zip(*[
+            (self.Inference_Step(mels), speakers)
+            for mels, speakers in tqdm(self.dataLoader_Dict['Inference'], desc='[Inference]')
             ])
-        
-        self.TSNE(
-            embeddings= torch.cat(embeddings, dim= 0),
-            datasets= [dataset for dataset_List in datasets for dataset in dataset_List],
-            speakers= [speaker for speaker_List in speakers for speaker in speaker_List],
-            tag= 'infernce/tsne'
+        embeddings = torch.cat(embeddings, dim= 0).cpu().numpy()
+        speakers = [speaker for speaker_List in speakers for speaker in speaker_List]
+
+        self.writer_Dict['Evaluation'].add_embedding(
+            embeddings,
+            metadata= speakers,
+            global_step= self.steps,
+            tag= 'Embeddings'
             )
         
         self.model.train()
 
-    def TSNE(self, embeddings, datasets, speakers, tag):
-        scatters = TSNE(n_components=2, random_state= 0).fit_transform(embeddings[:10 * hp_Dict['Train']['Batch']['Eval']['Pattern_per_Speaker']].cpu().numpy())
-        scatters = np.reshape(scatters, [-1, hp_Dict['Train']['Batch']['Eval']['Pattern_per_Speaker'], 2])
-
-        fig = plt.figure(figsize=(8, 8))
-        for scatter, dataset, speaker in zip(
-            scatters,
-            datasets[::hp_Dict['Train']['Batch']['Eval']['Pattern_per_Speaker']],
-            speakers[::hp_Dict['Train']['Batch']['Eval']['Pattern_per_Speaker']]
-            ):
-            plt.scatter(scatter[:, 0], scatter[:, 1], label= '{}.{}'.format(dataset, speaker))
-        plt.legend()
-        plt.tight_layout()
-        self.writer.add_figure(tag, fig, self.steps)
-        plt.close(fig)
 
     def Load_Checkpoint(self):
-        state_Dict = torch.load(
-            os.path.join(hp_Dict['Checkpoint_Path'], 'S_{}.pkl'.format(self.steps).replace('\\', '/')),
-            map_location= 'cpu'
-            )
+        if self.steps == 0:
+            paths = [
+                os.path.join(root, file).replace('\\', '/')
+                for root, _, files in os.walk(hp.Checkpoint_Path)
+                for file in files
+                if os.path.splitext(file)[1] == '.pt'
+                ]
+            if len(paths) > 0:
+                path = max(paths, key = os.path.getctime)
+            else:
+                return  # Initial training
+        else:
+            path = os.path.join(path, 'S_{}.pt'.format(self.steps).replace('\\', '/'))
 
+        state_Dict = torch.load(os.path.join(path), map_location= 'cpu')
         self.model.load_state_dict(state_Dict['Model'])
         self.optimizer.load_state_dict(state_Dict['Optimizer'])
         self.scheduler.load_state_dict(state_Dict['Scheduler'])
         self.steps = state_Dict['Steps']
         self.epochs = state_Dict['Epochs']
 
+        if hp.Use_Mixed_Precision:
+            if not 'AMP' in state_Dict.keys():
+                logging.warn('No AMP state dict is in the checkpoint. Model regards this checkpoint is trained without mixed precision.')
+            else:                
+                amp.load_state_dict(state_Dict['AMP'])
+
         logging.info('Checkpoint loaded at {} steps.'.format(self.steps))
 
     def Save_Checkpoint(self):
-        os.makedirs(hp_Dict['Checkpoint_Path'], exist_ok= True)
+        os.makedirs(hp.Checkpoint_Path, exist_ok= True)
 
         state_Dict = {
             'Model': self.model.state_dict(),
@@ -247,28 +311,29 @@ class Trainer:
             'Steps': self.steps,
             'Epochs': self.epochs,
             }
+        if hp.Use_Mixed_Precision:
+            state_Dict['AMP'] = amp.state_dict()
 
         torch.save(
             state_Dict,
-            os.path.join(hp_Dict['Checkpoint_Path'], 'S_{}.pkl'.format(self.steps).replace('\\', '/'))
+            os.path.join(hp.Checkpoint_Path, 'S_{}.pkl'.format(self.steps).replace('\\', '/'))
             )
 
         logging.info('Checkpoint saved at {} steps.'.format(self.steps))
        
 
-    def Train(self):        
-        self.tqdm = tqdm(
-            initial= self.steps,
-            total= hp_Dict['Train']['Max_Step'],
-            desc='[Training]'
-            )
-        self.train_Losses = 0.0
-
-        if hp_Dict['Train']['Initial_Inference'] and self.steps == 0:
+    def Train(self):
+        if hp.Train.Initial_Inference and self.steps == 0:
             self.Evaluation_Epoch()
             self.Inference_Epoch()
 
-        while self.steps < hp_Dict['Train']['Max_Step']:
+        self.tqdm = tqdm(
+            initial= self.steps,
+            total= hp.Train.Max_Step,
+            desc='[Training]'
+            )
+
+        while self.steps < hp.Train.Max_Step:
             try:
                 self.Train_Epoch()
             except KeyboardInterrupt:
@@ -283,5 +348,5 @@ if __name__ == '__main__':
     argParser.add_argument('-s', '--steps', default= 0, type= int)
     args = argParser.parse_args()
     
-    new_Trainer = Trainer(steps= args.steps)    
+    new_Trainer = Trainer(steps= args.steps)
     new_Trainer.Train()

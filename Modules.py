@@ -3,9 +3,9 @@ import logging
 
 # I don't use hyper parameter dict in here
 # because several moudles become a submodule
-# on other repository,
+# on other repository.
 
-class Encoder(torch.nn.Module):
+class GE2E(torch.nn.Module):
     def __init__(self, mel_dims, lstm_size, lstm_stacks, embedding_size):
         super(Encoder, self).__init__()   
         self.lstm_stacks = lstm_stacks
@@ -38,10 +38,25 @@ class Encoder(torch.nn.Module):
 
         x = mels.transpose(2, 1)    # [Batch, Time, Mel_dim]
         x = self.layer_Dict['Prenet'](x)    # [Batch, Time, LSTM_dim]
+        if hp.Device != '-1': torch.cuda.synchronize()
+
         for index in range(self.lstm_stacks):
             x = self.layer_Dict['LSTM_{}'.format(index)](x)[0] + \
                 (x if index < self.lstm_stacks - 1 else 0)    # [Batch, Time, LSTM_dim]
-        return self.layer_Dict['Linear'](x[:, -1, :])   # [Batch, Emb_dim]
+            if hp.Device != '-1': torch.cuda.synchronize()
+
+        x = self.layer_Dict['Linear'](x[:, -1, :])   # [Batch, Emb_dim]
+        
+        if hp.Device != '-1': torch.cuda.synchronize()
+
+        return x
+
+    def inference(self, mels, samples= 1):
+        assert mels.size(0) % samples == 0, 'Batch size must be \'speaker * samples\'.'
+
+        embeddings = self.forward(mels) # [Batch * Samples, Emb_dim]
+        embeddings = embeddings.view(-1, samples, embeddings.size(1)).mean(dim= 1) # [Batch, Samples, Emb_dim] -> [Batch, Emb_dim]
+        return torch.nn.functional.normalize(embeddings, p=2, dim= 1)
 
 class Linear(torch.nn.Linear):
     def __init__(self, w_init_gain= 'linear', *args, **kwagrs):
@@ -66,7 +81,7 @@ class GE2E_Loss(torch.nn.Module):
         self.layer_Dict['Consine_Similarity'] = torch.nn.CosineSimilarity(dim= 2)
         self.layer_Dict['Cross_Entroy_Loss'] = torch.nn.CrossEntropyLoss()
 
-    def forward(self, embeddings, pattern_per_Speaker, device):
+    def forward(self, embeddings, pattern_per_Speaker):
         '''
         embeddings: [Batch, Emb_dim]
         The target of softmax is always 0.
@@ -85,7 +100,7 @@ class GE2E_Loss(torch.nn.Module):
         within_Cosine_Similarities = self.layer_Dict['Consine_Similarity'](x, centroid_for_Within) # [Speakers, Pattern_per_Speaker]
         within_Cosine_Similarities = self.weight * within_Cosine_Similarities + self.bias    
 
-        between_Cosine_Simiarity_Filter = torch.eye(x.size(0)).to(device)
+        between_Cosine_Simiarity_Filter = torch.eye(x.size(0)).to(embeddings.device)
         between_Cosine_Simiarity_Filter = 1.0 - between_Cosine_Simiarity_Filter.unsqueeze(1).expand(-1, x.size(1), -1) # [speaker, pattern_per_Speaker, speaker]
         between_Cosine_Simiarity_Filter = between_Cosine_Simiarity_Filter.bool()
 
@@ -101,27 +116,6 @@ class GE2E_Loss(torch.nn.Module):
         logits = torch.cat([within_Cosine_Similarities.unsqueeze(2), between_Cosine_Simiarities], dim = 2)
         logits = logits.view(embeddings.size(0), -1)    # [speaker * pattern_per_Speaker, speaker]
         
-        labels = torch.zeros(embeddings.size(0), dtype= torch.long).to(device)
+        labels = torch.zeros(embeddings.size(0), dtype= torch.long).to(embeddings.device)
         
         return self.layer_Dict['Cross_Entroy_Loss'](logits, labels)
-
-
-def Normalize(embeddings, samples):
-    '''
-    embeddings: [Batch * Samples, Emb_dim]
-    '''
-    embeddings = embeddings.view(-1, samples, embeddings.size(1)).mean(dim= 1) # [Batch * Samples, Emb_dim] -> [Batch, Samples, Emb_dim] -> [Batch, Emb_dim]
-    return torch.nn.functional.normalize(embeddings, p=2, dim= 1)
-
-
-if __name__ == "__main__":
-    encoder = Encoder().cuda()
-    loss = GE2E_Loss().cuda()
-    mels = torch.randn(320, 80, 256).cuda()
-    x = encoder(mels)
-    x = loss(x)
-
-    ce = torch.nn.CrossEntropyLoss()
-    l = ce(x, )
-
-    print(l)

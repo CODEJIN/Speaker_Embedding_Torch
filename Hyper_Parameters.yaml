@@ -6,7 +6,7 @@ Sound:
     Sample_Rate: 16000
     Max_Abs_Mel: 4
 
-Encoder:
+GE2E:
     Embedding_Size: 256
     LSTM:
         Sizes: 256
@@ -37,20 +37,23 @@ Train:
         Overlap_Length: 32
     Learning_Rate:
         Initial: 1.0e-3
-        Epsilon: 1.0e-7
-        Decay_Step: 10000
-        Decay_Rate: 0.5
+        Base: 4000
     ADAM:
         Beta1: 0.9
         Beta2: 0.999
-        Epsilon: 1.0e-8
-    Gradient_Norm: 1.0    
+        Epsilon: 1.0e-6
+    Weight_Decay: 1.0e-6
+    Gradient_Norm: 1.0
     Max_Step: 100000
     Checkpoint_Save_Interval: 1000
     Logging_Interval: 100
     Evaluation_Interval: 1000
-    Initial_Inference: true
+    Inference_Interval: 1000
+    Initial_Inference: false
 
+
+Inference_Batch_Size: null
 Checkpoint_Path: 'D:/SE.Results/Checkpoint'
 Log_Path: 'D:/SE.Results/Log'
+Use_Mixed_Precision: true  # apex is required.
 Device: '0'

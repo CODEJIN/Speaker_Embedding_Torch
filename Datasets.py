@@ -3,134 +3,12 @@ import numpy as np
 import yaml, pickle, os
 from random import sample
 
-with open('Hyper_Parameter.yaml') as f:
-    hp_Dict = yaml.load(f, Loader=yaml.Loader)
 
-class Train_Dataset(torch.utils.data.Dataset):
-    def __init__(self):
-        metadata_Dict = pickle.load(open(
-            os.path.join(hp_Dict['Train']['Train_Pattern']['Path'], hp_Dict['Train']['Train_Pattern']['Metadata_File']).replace('\\', '/'), 'rb'
-            ))
-        self.file_List_by_Speaker_Dict = {
-            key: value
-            for key, value in metadata_Dict['File_List_by_Speaker_Dict'].items()
-            if len(value) >= hp_Dict['Train']['Batch']['Train']['Pattern_per_Speaker']
-            }
-        self.key_List = list(self.file_List_by_Speaker_Dict.keys())
-
-        self.cache_Dict = {}
-
-    def __getitem__(self, idx):
-        dataset, speaker = self.key_List[idx]
-        files = self.file_List_by_Speaker_Dict[dataset, speaker]
-        files = sample(files, hp_Dict['Train']['Batch']['Train']['Pattern_per_Speaker'])
-        
-        patterns = []
-        for file in files:
-            path = os.path.join(hp_Dict['Train']['Train_Pattern']['Path'], dataset, file).replace('\\', '/')
-            if path in self.cache_Dict.keys():
-                patterns.append(self.cache_Dict[path])
-                continue
-
-            mel = pickle.load(open(path, 'rb'))['Mel']
-            patterns.append(mel)
-            if hp_Dict['Train']['Use_Pattern_Cache']:
-                self.cache_Dict[path] = mel
-        
-        return patterns
-
-    def __len__(self):
-        return len(self.key_List)
-
-class Dev_Dataset(torch.utils.data.Dataset):
-    def __init__(self):
-        metadata_Dict = pickle.load(open(
-            os.path.join(
-                hp_Dict['Train']['Eval_Pattern']['Path'],
-                hp_Dict['Train']['Eval_Pattern']['Metadata_File']
-                ).replace('\\', '/'), 'rb'
-                ))
-        self.file_List_by_Speaker_Dict = {
-            key: value
-            for key, value in metadata_Dict['File_List_by_Speaker_Dict'].items()
-            if len(value) >= hp_Dict['Train']['Batch']['Eval']['Pattern_per_Speaker']
-            }
-        self.key_List = list(self.file_List_by_Speaker_Dict.keys())
-
-    def __getitem__(self, idx):
-        dataset, speaker = self.key_List[idx]
-        files = self.file_List_by_Speaker_Dict[dataset, speaker]
-        files = sample(files, hp_Dict['Train']['Batch']['Eval']['Pattern_per_Speaker'])
-
-        patterns = []
-        for file in files:
-            with open(os.path.join(hp_Dict['Train']['Eval_Pattern']['Path'], dataset, file).replace('\\', '/'), 'rb') as f:
-                pattern_Dict = pickle.load(f)
-                patterns.append((pattern_Dict['Mel'], pattern_Dict['Dataset'], pattern_Dict['Speaker']))
-                
-        return patterns
-
-    def __len__(self):
-        return len(self.key_List)
-
-
-class Train_Collater:
-    def __call__(self, batch):        
-        frame_Length = np.random.randint(
-            hp_Dict['Train']['Frame_Length']['Min'],
-            hp_Dict['Train']['Frame_Length']['Max'] + 1
-            )
-
-        mels = [     
-            Correction(mel, frame_Length)
-            for speaker_Mels in batch
-            for mel in speaker_Mels
-            ]        
-        mels = torch.FloatTensor(np.stack(mels, axis= 0)).transpose(2, 1)   # [Speakers * Pattern_per_Speaker, Mel_dim, Time]
-
-        return mels
-
-class Dev_Collater:
-    def __call__(self, batch):        
-        frame_Length = np.random.randint(
-            hp_Dict['Train']['Frame_Length']['Min'],
-            hp_Dict['Train']['Frame_Length']['Max'] + 1
-            )
-
-        mels, datasets, speakers = zip(*[     
-            (Correction(mel, frame_Length), dataset, speaker)
-            for patterns in batch
-            for mel, dataset, speaker in patterns
-            ])
-        mels = torch.FloatTensor(np.stack(mels, axis= 0)).transpose(2, 1)   # [Speakers * Pattern_per_Speaker, Mel_dim, Time]
-
-        return mels, datasets, speakers
-
-
-class Inference_Collater:
-    def __init__(self):
-        self.required_Length = \
-            hp_Dict['Train']['Inference']['Samples'] * \
-            (hp_Dict['Train']['Inference']['Frame_Length'] - hp_Dict['Train']['Inference']['Overlap_Length']) + \
-            hp_Dict['Train']['Inference']['Overlap_Length']
-
-    def __call__(self, batch):        
-        mels, datasets, speakers = [], [], []
-        for patterns in batch:
-            for mel, dataset, speaker in patterns:
-                mel = Correction(mel, self.required_Length)                
-                mel = np.stack([
-                    mel[index:index + hp_Dict['Train']['Inference']['Frame_Length']]
-                    for index in range(0, self.required_Length - hp_Dict['Train']['Inference']['Overlap_Length'], hp_Dict['Train']['Inference']['Frame_Length'] - hp_Dict['Train']['Inference']['Overlap_Length'])
-                    ])
-                mels.append(mel)
-                datasets.append(dataset)
-                speakers.append(speaker)
-
-        mels = torch.FloatTensor(np.vstack(mels)).transpose(2, 1)   # [Speakers * Samples, Mel_dim, Time]
-
-        return mels, datasets, speakers
-
+from Arg_Parser import Recursive_Parse
+hp = Recursive_Parse(yaml.load(
+    open('Hyper_Parameters.yaml', encoding='utf-8'),
+    Loader=yaml.Loader
+    ))
 
 
 def Correction(mel, frame_Length):
@@ -146,6 +24,99 @@ def Correction(mel, frame_Length):
             )
 
 
+class Dataset(torch.utils.data.Dataset):
+    def __init__(
+        self,
+        pattern_path,
+        metadata_file,
+        pattern_per_speaker,
+        num_speakers= None,
+        use_cache= False
+        ):
+        self.pattern_Path = pattern_path
+        self.pattern_per_Speaker = pattern_per_speaker
+        self.use_Cache = use_cache
+
+        metadata_Dict = pickle.load(open(
+            os.path.join(pattern_path, metadata_file).replace('\\', '/'), 'rb'
+            ))
+        self.files_by_Speakers = {
+            speaker: paths
+            for speaker, paths in metadata_Dict['File_List_by_Speaker_Dict'].items()
+            if len(paths) >= pattern_per_speaker
+            }
+        if not num_speakers is None:
+            self.files_by_Speakers = self.files_by_Speakers[:num_speakers]
+        self.speakers = list(self.files_by_Speakers.keys())
+
+        self.cache_Dict = {}
+
+    def __getitem__(self, idx):
+        speaker = self.speakers[idx]
+        files = self.files_by_Speakers[speaker]
+        files = sample(
+            population= self.files_by_Speakers[speaker],
+            k= self.pattern_per_Speaker
+            )
+        
+        patterns = []
+        for file in files:
+            path = os.path.join(self.pattern_Path, file).replace('\\', '/')
+            if path in self.cache_Dict.keys():
+                patterns.append(self.cache_Dict[path])
+                continue
+
+            mel = pickle.load(open(path, 'rb'))['Mel']
+            pattern = mel, speaker
+            patterns.append(pattern)
+            if self.use_Cache:
+                self.cache_Dict[path] = pattern
+        
+        return patterns
+
+    def __len__(self):
+        return len(self.speakers)
+
+
+class Collater:
+    def __init__(self, min_frame_length, max_frame_length):
+        self.min_Frame_Length = min_frame_length
+        self.max_Frame_Length = max_frame_length
+
+    def __call__(self, batch):
+        frame_Length = np.random.randint(self.min_Frame_Length, self.max_Frame_Length + 1)
+        mels = [
+            Correction(mel, frame_Length)
+            for speaker_Mels, _ in batch
+            for mel in speaker_Mels
+            ]
+        mels = np.stack(mels, axis= 0)
+        mels = torch.FloatTensor(mels).transpose(2, 1)   # [Speakers * Pattern_per_Speaker, Mel_dim, Time]
+
+        return mels
+
+class Inference_Collater:
+    def __init__(self, samples, frame_length, overlap_length):
+        self.samples = samples
+        self.frame_Length = frame_length
+        self.overlap_Length = overlap_length
+        self.required_Length = samples * (frame_length - overlap_length) + overlap_length
+
+    def __call__(self, batch):
+        mels, speakers = [], []
+        for patterns in batch:
+            for mel, speaker in patterns:
+                mel = Correction(mel, self.required_Length)
+                mel = np.stack([
+                    mel[index:index + self.frame_Length]
+                    for index in range(0, self.required_Length - self.overlap_Length, self.frame_Length - self.overlap_Length)
+                    ])
+                mels.append(mel)
+                speakers.append(speaker)
+
+        mels = torch.FloatTensor(np.vstack(mels)).transpose(2, 1)   # [Speakers * Samples, Mel_dim, Time]
+
+        return mels, speakers
 
 
 if __name__ == "__main__":    
@@ -154,8 +125,8 @@ if __name__ == "__main__":
         shuffle= True,
         collate_fn= Inference_Collater(),
         # collate_fn= Dev_Collater(),
-        batch_size= hp_Dict['Train']['Batch']['Eval']['Speaker'],
-        num_workers= hp_Dict['Train']['Num_Workers'],
+        batch_size= hp.Train.Batch.Eval.Speaker,
+        num_workers= hp.Train.Num_Workers,
         pin_memory= True
         )
 

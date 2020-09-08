@@ -9,15 +9,18 @@ import matplotlib.pyplot as plt
 from random import sample
 from sklearn.manifold import TSNE
 
-from Modules import Encoder, Normalize
-from Datasets import Correction
-from Pattern_Generator import Mel_Generate
+from Modules import GE2E
+from Datasets import Inference_Collater
+from Pattern_Generator import Pattern_Generate
 
-with open('Hyper_Parameter.yaml') as f:
-    hp_Dict = yaml.load(f, Loader=yaml.Loader)
+from Arg_Parser import Recursive_Parse
+hp = Recursive_Parse(yaml.load(
+    open('Hyper_Parameters.yaml', encoding='utf-8'),
+    Loader=yaml.Loader
+    ))
 
-if not hp_Dict['Device'] is None:
-    os.environ['CUDA_VISIBLE_DEVICES']= hp_Dict['Device']
+if not hp.Device is None:
+    os.environ['CUDA_VISIBLE_DEVICES']= hp.Device
 
 if not torch.cuda.is_available():
     device = torch.device('cpu')
@@ -27,8 +30,8 @@ else:
     torch.cuda.set_device(0)
 
 logging.basicConfig(
-        level=logging.INFO, stream=sys.stdout,
-        format="%(asctime)s (%(module)s:%(lineno)d) %(levelname)s: %(message)s")
+    level=logging.INFO, stream=sys.stdout,
+    format="%(asctime)s (%(module)s:%(lineno)d) %(levelname)s: %(message)s")
 
 class Inferencer:
     def __init__(
@@ -49,34 +52,31 @@ class Inferencer:
         self.dataLoader = torch.utils.data.DataLoader(
             dataset= Dataset(paths, labels),
             shuffle= False,
-            collate_fn= Collater(),
-            batch_size= hp_Dict['Train']['Batch']['Eval']['Speaker'],
-            num_workers= hp_Dict['Train']['Num_Workers'],
+            collate_fn= Inference_Collater(
+                samples= hp.Train.Inference.Samples,
+                frame_length= hp.Train.Inference.Frame_Length,
+                overlap_length= hp.Train.Inference.Overlap_Length
+                ),
+            batch_size= hp.Train.Batch.Eval.Speaker,
+            num_workers= hp.Train.Num_Workers,
             pin_memory= True
             )
         
     def Model_Generate(self):
-        self.model = Encoder(
-            mel_dims= hp_Dict['Sound']['Mel_Dim'],
-            lstm_size= hp_Dict['Encoder']['LSTM']['Sizes'],
-            lstm_stacks= hp_Dict['Encoder']['LSTM']['Stacks'],            
-            embedding_size= hp_Dict['Encoder']['Embedding_Size'],
+        self.model = GE2E(
+            mel_dims= hp.Sound.Mel_Dim,
+            lstm_size= hp.GE2E.LSTM.Sizes,
+            lstm_stacks= hp.GE2E.LSTM.Stacks,
+            embedding_size= hp.GE2E.Embedding_Size,
             ).to(device)
-        logging.info(self.model)
-
+        self.model.eval()
 
     @torch.no_grad()
     def Inference_Step(self, mels):
-        return Normalize(
-            self.model(mels.to(device)),
-            samples= hp_Dict['Train']['Inference']['Samples']
-            )
+        return self.model.inference(mels.to(device), hp.Train.Inference.Samples)
 
     def Inference(self):
         logging.info('(Steps: {}) Start inference.'.format(self.steps))
-
-        self.model.eval()
-
         embeddings, labels = zip(*[
             (self.Inference_Step(mels), labels)
             for mels, labels in tqdm(self.dataLoader, desc='[Inference]')
@@ -123,39 +123,12 @@ class Dataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         path, label = self.pattern_List[idx]
-        mel = Mel_Generate(path, top_db= 20)
+        mel = Pattern_Generate(path, top_db= 20)[1]
         
         return mel, label
 
     def __len__(self):
         return len(self.pattern_List)
-
-class Collater():
-    def __init__(self):
-        self.required_Length = \
-            hp_Dict['Train']['Inference']['Samples'] * \
-            (hp_Dict['Train']['Inference']['Frame_Length'] - hp_Dict['Train']['Inference']['Overlap_Length']) + \
-            hp_Dict['Train']['Inference']['Overlap_Length']
-
-    def __call__(self, batch):
-        batch = sorted(batch, key= lambda x: x[1])
-
-        mels, labels = [], []
-        for mel, label in batch:
-            mel = Correction(mel, self.required_Length)
-            mel = np.stack([
-                mel[index:index + hp_Dict['Train']['Inference']['Frame_Length']]
-                for index in range(0, self.required_Length - hp_Dict['Train']['Inference']['Overlap_Length'], hp_Dict['Train']['Inference']['Frame_Length'] - hp_Dict['Train']['Inference']['Overlap_Length'])
-                ])
-            mels.append(mel)
-            labels.append(label)
-
-        mels = torch.FloatTensor(np.vstack(mels)).transpose(2, 1)   # [Batchs * Samples, Mel_dim, Time]
-
-        return mels, labels
-
-
-
 
 if __name__ == '__main__':
     paths, labels = zip(*[line.strip().split() for line in open('text.txt', 'r').readlines()])
