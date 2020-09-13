@@ -45,8 +45,11 @@ class Dataset(torch.utils.data.Dataset):
             for speaker, paths in metadata_Dict['File_List_by_Speaker_Dict'].items()
             if len(paths) >= pattern_per_speaker
             }
-        if not num_speakers is None:
-            self.files_by_Speakers = self.files_by_Speakers[:num_speakers]
+        if not num_speakers is None and num_speakers < len(self.files_by_Speakers.keys()):
+            self.files_by_Speakers = {
+                speaker: self.files_by_Speakers[speaker]
+                for speaker in sample(list(self.files_by_Speakers.keys()), num_speakers)
+                }
         self.speakers = list(self.files_by_Speakers.keys())
 
         self.cache_Dict = {}
@@ -87,8 +90,8 @@ class Collater:
         frame_Length = np.random.randint(self.min_Frame_Length, self.max_Frame_Length + 1)
         mels = [
             Correction(mel, frame_Length)
-            for speaker_Mels, _ in batch
-            for mel in speaker_Mels
+            for pattern in batch
+            for mel, _ in pattern
             ]
         mels = np.stack(mels, axis= 0)
         mels = torch.FloatTensor(mels).transpose(2, 1)   # [Speakers * Pattern_per_Speaker, Mel_dim, Time]

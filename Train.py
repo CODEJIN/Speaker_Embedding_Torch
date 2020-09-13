@@ -63,8 +63,7 @@ class Trainer:
             'Evaluation': Logger(os.path.join(hp.Log_Path, 'Evaluation')),
             }
 
-        if self.steps > 0:
-            self.Load_Checkpoint()
+        self.Load_Checkpoint()
 
     def Datset_Generate(self):
         train_Dataset = Dataset(
@@ -316,15 +315,23 @@ class Trainer:
 
         torch.save(
             state_Dict,
-            os.path.join(hp.Checkpoint_Path, 'S_{}.pkl'.format(self.steps).replace('\\', '/'))
+            os.path.join(hp.Checkpoint_Path, 'S_{}.pt'.format(self.steps).replace('\\', '/'))
             )
 
         logging.info('Checkpoint saved at {} steps.'.format(self.steps))
        
 
     def Train(self):
-        if hp.Train.Initial_Inference and self.steps == 0:
+        hp_Path = os.path.join(hp.Checkpoint_Path, 'Hyper_Parameters.yaml').replace('\\', '/')
+        if not os.path.exists(hp_Path):
+            from shutil import copyfile
+            os.makedirs(hp.Checkpoint_Path, exist_ok= True)
+            copyfile('Hyper_Parameters.yaml', hp_Path)
+            
+        if self.steps == 0:
             self.Evaluation_Epoch()
+
+        if hp.Train.Initial_Inference:
             self.Inference_Epoch()
 
         self.tqdm = tqdm(

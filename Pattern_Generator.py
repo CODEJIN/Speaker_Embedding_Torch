@@ -85,9 +85,9 @@ def Pattern_File_Generate(path, speaker_ID, speaker, dataset, text= None, tag=''
         audio, mel, pitch = Pattern_Generate(path, top_DB_Dict[dataset])
         assert mel.shape[0] == pitch.shape[0], 'Mel_shape != Pitch_shape {} != {}'.format(mel.shape, pitch.shape)
         new_Pattern_Dict = {
-            'Audio': audio.astype(np.float32),
-            'Mel': mel.astype(np.float32),
-            'Pitch': pitch.astype(np.float32),
+            'Audio': audio.astype(np.float16),
+            'Mel': mel.astype(np.float16),
+            'Pitch': pitch.astype(np.float16),
             'Speaker_ID': speaker_ID,
             'Speaker': speaker,
             'Dataset': dataset,
@@ -543,9 +543,4 @@ if __name__ == '__main__':
     Metadata_Generate(use_text= args.use_text)
     Metadata_Generate(eval= True, use_text= args.use_text)
 
-
-# python Pattern_Generator.py -lj "D:\Pattern\ENG\LJSpeech" -bc2013 "D:\Pattern\ENG\BC2013" -cmua "D:\Pattern\ENG\CMUA" -vctk "D:\Pattern\ENG\VCTK" -libri "D:\Pattern\ENG\LibriTTS"
-# python Pattern_Generator.py -lj "D:\Pattern\ENG\LJSpeech" -vctk "D:\Pattern\ENG\VCTK" -libri "D:\Pattern\ENG\LibriTTS" -text
-# python Pattern_Generator.py -lj "D:\Pattern\ENG\LJSpeech" -text
-# python Pattern_Generator.py -lj /home/heejo/data/Eng/LJSpeech-1.1 -text
-# python Pattern_Generator.py -vc2 "D:\Pattern\ENG\VC2" -mw 1
+# python Pattern_Generator.py -lj "D:/Pattern/ENG/LJSpeech" -bc2013 "D:/Pattern/ENG/BC2013" -cmua "D:/Pattern/ENG/CMUA" -vctk "D:/Pattern/ENG\VCTK" -libri "D:/Pattern/ENG/LibriTTS" -vc1 "E:\Raw_Data\Vox1" -vc2 "E:\Raw_Data\Vox2" -evalr 0.0 -evalm 0 -mw 4

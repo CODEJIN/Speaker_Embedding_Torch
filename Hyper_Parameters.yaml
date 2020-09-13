@@ -3,8 +3,14 @@ Sound:
     Mel_Dim: 80
     Frame_Length: 1024
     Frame_Shift: 256
-    Sample_Rate: 16000
+    Sample_Rate: 24000
+    Mel_F_Min: 125
+    Mel_F_Max: 7600
     Max_Abs_Mel: 4
+    Confidence_Threshold: 0.6
+    Gaussian_Smoothing_Sigma: 0.0
+    Pitch_Min: 100.0
+    Pitch_Max: 500.0
 
 GE2E:
     Embedding_Size: 256
@@ -15,19 +21,19 @@ GE2E:
 Train:
     Use_Pattern_Cache: false
     Train_Pattern:
-        Path: 'C:/Pattern/AutoVC.Pattern/Train'
+        Path: 'E:/24K.Pattern.No_Text.All/Train'
         Metadata_File: 'METADATA.PICKLE'
     Eval_Pattern:
-        Path: 'C:/Pattern/AutoVC.Pattern/Eval'
+        Path: 'E:/24K.Pattern.No_Text.All/Eval'
         Metadata_File: 'METADATA.PICKLE'
-    Num_Workers: 2  # Each epoch is based on the number of speakers, so using a lot of workers slows down the pattern generating speed.
+    Num_Workers: 2
     Batch:
         Train:
             Speaker: 64
-            Pattern_per_Speaker: 15
+            Pattern_per_Speaker: 10
         Eval:
             Speaker: 64
-            Pattern_per_Speaker: 40
+            Pattern_per_Speaker: 10
     Frame_Length:
         Min: 140
         Max: 180
@@ -53,7 +59,7 @@ Train:
 
 
 Inference_Batch_Size: null
-Checkpoint_Path: 'D:/SE.Results/Checkpoint'
-Log_Path: 'D:/SE.Results/Log'
-Use_Mixed_Precision: true  # apex is required.
+Checkpoint_Path: 'D:/SE.Results/24K.All/Checkpoint'
+Log_Path: 'D:/SE.Results/24K.All/Log'
+Use_Mixed_Precision: false  # apex is required.
 Device: '0'
