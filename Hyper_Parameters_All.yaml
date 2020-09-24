@@ -21,12 +21,12 @@ GE2E:
 Train:
     Use_Pattern_Cache: false
     Train_Pattern:
-        Path: 'E:/24K.Pattern.No_Text.N60/Train'
+        Path: 'E:/24K.Pattern.No_Text.All/Train'
         Metadata_File: 'METADATA.PICKLE'
     Eval_Pattern:
-        Path: 'E:/24K.Pattern.No_Text.N60/Eval'
+        Path: 'E:/24K.Pattern.No_Text.All/Eval'
         Metadata_File: 'METADATA.PICKLE'
-    Num_Workers: 16
+    Num_Workers: 2
     Batch:
         Train:
             Speaker: 32
@@ -48,7 +48,7 @@ Train:
         Beta1: 0.9
         Beta2: 0.999
         Epsilon: 1.0e-6
-    Weight_Decay: 1.0e-6
+    Weight_Decay: 0.0 #1.0e-6
     Gradient_Norm: 1.0
     Max_Step: 100000
     Checkpoint_Save_Interval: 1000
@@ -59,7 +59,7 @@ Train:
 
 
 Inference_Batch_Size: null
-Checkpoint_Path: 'D:/SE.Results/24K.N60.WD/Checkpoint'
-Log_Path: 'D:/SE.Results/24K.N60.WD/Log'
+Checkpoint_Path: 'D:/SE.Results/24K.All/Checkpoint'
+Log_Path: 'D:/SE.Results/24K.All/Log'
 Use_Mixed_Precision: false  # apex is required.
 Device: '0'

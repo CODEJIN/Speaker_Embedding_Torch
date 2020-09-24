@@ -156,7 +156,7 @@ class Trainer:
     def Train_Step(self, mels):
         loss_Dict = {}
 
-        mels = mels.to(device)
+        mels = mels.to(device, non_blocking=True)
         embeddings = self.model(mels)
         loss_Dict['Embedding'] = self.criterion(embeddings, hp.Train.Batch.Train.Pattern_per_Speaker)
                 
@@ -215,7 +215,7 @@ class Trainer:
     def Evaluation_Step(self, mels):
         loss_Dict = {}
 
-        mels = mels.to(device)
+        mels = mels.to(device, non_blocking=True)
         embeddings = self.model(mels)
         loss_Dict['Embedding'] = self.criterion(embeddings, hp.Train.Batch.Eval.Pattern_per_Speaker)
 
@@ -243,8 +243,8 @@ class Trainer:
   
     @torch.no_grad()
     def Inference_Step(self, mels):
-        return self.model.inference(
-            mels= mels.to(device),
+        return self.model(
+            mels= mels.to(device, non_blocking=True),
             samples= hp.Train.Inference.Samples
             )
 

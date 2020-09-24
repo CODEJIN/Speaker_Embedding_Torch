@@ -34,18 +34,16 @@ class GE2E(torch.nn.Module):
             out_features= embedding_size,
             )
 
-    def forward(self, mels):
+    def forward(self, mels, samples= 1):
         '''
         mels: [Batch, Mel_dim, Time]
-        '''        
-        for index in range(self.lstm_stacks):
-            self.layer_Dict['LSTM_{}'.format(index)].flatten_parameters()
-
+        '''
         x = mels.transpose(2, 1)    # [Batch, Time, Mel_dim]
-        x = self.layer_Dict['Prenet'](x)    # [Batch, Time, LSTM_dim]        
+        x = self.layer_Dict['Prenet'](x)    # [Batch, Time, LSTM_dim]
         if 'cuda' != x.device: torch.cuda.synchronize()
 
         for index in range(self.lstm_stacks):
+            self.layer_Dict['LSTM_{}'.format(index)].flatten_parameters()
             x = self.layer_Dict['LSTM_{}'.format(index)](x)[0] + \
                 (x if index < self.lstm_stacks - 1 else 0)    # [Batch, Time, LSTM_dim]
             if 'cuda' != x.device: torch.cuda.synchronize()
@@ -54,14 +52,10 @@ class GE2E(torch.nn.Module):
         
         if 'cuda' != x.device: torch.cuda.synchronize()
 
+        x = x.view(-1, samples, x.size(1)).mean(dim= 1) # [Batch, Samples, Emb_dim] -> [Batch, Emb_dim]
+        x = torch.nn.functional.normalize(x, p=2, dim= 1)
+
         return x
-
-    def inference(self, mels, samples= 1):
-        assert mels.size(0) % samples == 0, 'Batch size must be \'speaker * samples\'.'
-
-        embeddings = self.forward(mels) # [Batch * Samples, Emb_dim]
-        embeddings = embeddings.view(-1, samples, embeddings.size(1)).mean(dim= 1) # [Batch, Samples, Emb_dim] -> [Batch, Emb_dim]
-        return torch.nn.functional.normalize(embeddings, p=2, dim= 1)
 
 class Linear(torch.nn.Linear):
     def __init__(self, w_init_gain= 'linear', *args, **kwagrs):
@@ -91,8 +85,6 @@ class GE2E_Loss(torch.nn.Module):
         embeddings: [Batch, Emb_dim]
         The target of softmax is always 0.
         '''
-        embeddings = torch.nn.functional.normalize(embeddings, p=2, dim= 1)
-
         x = embeddings.view(
             embeddings.size(0) // pattern_per_Speaker,
             pattern_per_Speaker,
