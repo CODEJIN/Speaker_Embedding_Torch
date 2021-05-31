@@ -1,86 +1,89 @@
+import torch
 import numpy as np
 import yaml, os, time, pickle, librosa, re, argparse
 from concurrent.futures import ThreadPoolExecutor as PE
 from collections import deque
 from threading import Thread
-from random import shuffle
+from random import sample, shuffle
 from tqdm import tqdm
 
-from Audio import Audio_Prep, Mel_Generate
-from yin import pitch_calc
-
+from meldataset import mel_spectrogram
 from Arg_Parser import Recursive_Parse
-hp = Recursive_Parse(yaml.load(
-    open('Hyper_Parameters_T.yaml', encoding='utf-8'),
-    Loader=yaml.Loader
-    ))
 
-using_Extension = [x.upper() for x in ['.wav', '.m4a', '.flac']]
-regex_Checker = re.compile('[A-Z,.?!\'\-\s]+')
-top_DB_Dict = {'LJ': 60, 'BC2013': 60, 'VCTK': 15, 'VC1': 23, 'VC1T': 23, 'VC2': 23, 'Libri': 23, 'CMUA': 60}  # VC1 and Libri is from 'https://github.com/CorentinJ/Real-Time-Voice-Cloning'
+using_extension = [x.upper() for x in ['.wav', '.m4a', '.flac']]
+top_DB_dict = {'VCTK': 15, 'VC1': 23, 'VC1T': 23, 'VC2': 23, 'Libri': 23}  # VC1 and Libri is from 'https://github.com/CorentinJ/Real-Time-Voice-Cloning'
 
 
-def Pitch_Generate(audio):
-    pitch = pitch_calc(
-        sig= audio,
-        sr= hp.Sound.Sample_Rate,
-        w_len= hp.Sound.Frame_Length,
-        w_step= hp.Sound.Frame_Shift,
-        f0_min= hp.Sound.Pitch_Min,
-        f0_max= hp.Sound.Pitch_Max,
-        confidence_threshold= hp.Sound.Confidence_Threshold,
-        gaussian_smoothing_sigma = hp.Sound.Gaussian_Smoothing_Sigma
-        )
-    return (pitch - np.min(pitch)) / (np.max(pitch) - np.min(pitch) + 1e-7)
+def Pattern_Generate(
+    path,
+    n_fft: int,
+    num_mels: int,
+    sample_rate: int,
+    hop_size: int,
+    win_size: int,
+    fmin: int,
+    fmax: int,
+    center: bool= False,
+    top_db= 60
+    ):
+    try:
+        audio, _ = librosa.load(path, sr= sample_rate)
+    except Exception as e:
+        return None, None
 
-def Pattern_Generate(path, top_db= 60):
-    audio = Audio_Prep(path, hp.Sound.Sample_Rate, top_db)
-    mel = Mel_Generate(
-        audio= audio,
-        sample_rate= hp.Sound.Sample_Rate,
-        num_frequency= hp.Sound.Spectrogram_Dim,
-        num_mel= hp.Sound.Mel_Dim,
-        window_length= hp.Sound.Frame_Length,
-        hop_length= hp.Sound.Frame_Shift,
-        mel_fmin= hp.Sound.Mel_F_Min,
-        mel_fmax= hp.Sound.Mel_F_Max,
-        max_abs_value= hp.Sound.Max_Abs_Mel
-        )
-    pitch = Pitch_Generate(audio)
+    audio = librosa.effects.trim(audio, top_db=top_db, frame_length= 512, hop_length= 256)[0]
+    audio = librosa.util.normalize(audio) * 0.95
+    mel = mel_spectrogram(
+        y= torch.from_numpy(audio).float().unsqueeze(0),
+        n_fft= n_fft,
+        num_mels= num_mels,
+        sampling_rate= sample_rate,
+        hop_size= hop_size,
+        win_size= win_size,
+        fmin= fmin,
+        fmax= fmax,
+        center= center
+        ).squeeze(0).T.numpy()
 
-    return audio, mel, pitch
+    return audio, mel
 
-def Pattern_File_Generate(path, speaker_ID, speaker, dataset, tag='', eval= False):
-    pattern_Path = hp.Train.Eval_Pattern.Path if eval else hp.Train.Train_Pattern.Path
+def Pattern_File_Generate(path, speaker_id, speaker, dataset, tag='', eval= False):
+    pattern_path = hp.Train.Eval_Pattern.Path if eval else hp.Train.Train_Pattern.Path
 
     file = '{}.{}{}.PICKLE'.format(
         speaker if dataset in speaker else '{}.{}'.format(dataset, speaker),
         '{}.'.format(tag) if tag != '' else '',
         os.path.splitext(os.path.basename(path))[0]
         ).upper()
-    file = os.path.join(pattern_Path, dataset, speaker, file).replace("\\", "/")
+    file = os.path.join(pattern_path, dataset, speaker, file).replace("\\", "/")
 
     if os.path.exists(file):
         return
 
-    try:
-        audio, mel, pitch = Pattern_Generate(path, top_DB_Dict[dataset])
-        assert mel.shape[0] == pitch.shape[0], 'Mel_shape != Pitch_shape {} != {}'.format(mel.shape, pitch.shape)
-        new_Pattern_Dict = {
-            'Audio': audio.astype(np.float32),
-            'Mel': mel.astype(np.float32),
-            'Pitch': pitch.astype(np.float32),
-            'Speaker_ID': speaker_ID,
-            'Speaker': speaker,
-            'Dataset': dataset,
-            }
-    except Exception as e:
-        print('Error: {} in {}'.format(e, path))
+    _, mel = Pattern_Generate(
+        path= path,
+        n_fft= hp.Sound.N_FFT,
+        num_mels= hp.Sound.Mel_Dim,
+        sample_rate= hp.Sound.Sample_Rate,
+        hop_size= hp.Sound.Frame_Shift,
+        win_size= hp.Sound.Frame_Length,
+        fmin= hp.Sound.Mel_F_Min,
+        fmax= hp.Sound.Mel_F_Max,
+        top_db= top_DB_dict[dataset] if dataset in top_DB_dict.keys() else 60
+        )
+    if mel is None:
+        print('Failed: {}'.format(path))
         return
+    new_Pattern_dict = {
+        'Mel': mel.astype(np.float32),
+        'Speaker_ID': speaker_id,
+        'Speaker': speaker,
+        'Dataset': dataset,
+        }
 
-    os.makedirs(os.path.join(pattern_Path, dataset, speaker).replace('\\', '/'), exist_ok= True)
-    with open(os.path.join(pattern_Path, dataset, file).replace("\\", "/"), 'wb') as f:
-        pickle.dump(new_Pattern_Dict, f, protocol=4)
+    os.makedirs(os.path.join(pattern_path, dataset, speaker).replace('\\', '/'), exist_ok= True)
+    with open(file, 'wb') as f:
+        pickle.dump(new_Pattern_dict, f, protocol=4)
 
 
 def LJ_Info_Load(path, num_per_speaker= None):
@@ -88,227 +91,227 @@ def LJ_Info_Load(path, num_per_speaker= None):
     for root, _, files in os.walk(path):
         for file in files:
             file = os.path.join(root, file).replace('\\', '/')
-            if not os.path.splitext(file)[1].upper() in using_Extension:
+            if not os.path.splitext(file)[1].upper() in using_extension:
                 continue
             paths.append(file)
-    if not num_per_speaker is None:
-        shuffle(paths)
-        paths = paths[:num_per_speaker]
 
-    speaker_Dict = {
+
+    if not num_per_speaker is None and num_per_speaker < len(paths):
+        paths = sample(paths, num_per_speaker)
+
+    speaker_dict = {
         path: 'LJ'
         for path in paths
         }
 
     print('LJ info generated: {}'.format(len(paths)))
-    return paths, speaker_Dict
+    return paths, speaker_dict
 
 def BC2013_Info_Load(path, num_per_speaker= None):
     paths = []
     for root, _, files in os.walk(path):
         for file in files:
             file = os.path.join(root, file).replace('\\', '/')
-            if not os.path.splitext(file)[1].upper() in using_Extension:
+            if not os.path.splitext(file)[1].upper() in using_extension:
                 continue
             paths.append(file)
 
-    if not num_per_speaker is None:
-        shuffle(paths)
-        paths = paths[:num_per_speaker]
+    if not num_per_speaker is None and num_per_speaker < len(paths):
+        paths = sample(paths, num_per_speaker)
 
-    speaker_Dict = {
+    speaker_dict = {
         path: 'BC2013'
         for path in paths
         }
 
     print('BC2013 info generated: {}'.format(len(paths)))
-    return paths, speaker_Dict
+    return paths, speaker_dict
 
 def CMUA_Info_Load(path, num_per_speaker= None):
     paths = []
-    speaker_Dict = {}
-    count_by_Speaker = {}
+    speaker_dict = {}
+    count_by_speaker = {}
     for root, _, files in os.walk(path):
         shuffle(files)
         for file in files:
             file = os.path.join(root, file).replace('\\', '/')
-            if not os.path.splitext(file)[1].upper() in using_Extension:
+            if not os.path.splitext(file)[1].upper() in using_extension:
                 continue
             speaker = 'CMUA.{}'.format(file.split('/')[-3].split('_')[2].upper())
-            if not num_per_speaker is None and speaker in count_by_Speaker.keys() and count_by_Speaker[speaker] >= num_per_speaker:
+
+            if not num_per_speaker is None and speaker in count_by_speaker.keys() and count_by_speaker[speaker] >= num_per_speaker:
                 continue
             
             paths.append(file)
-            speaker_Dict[file] = speaker
-            if not speaker in count_by_Speaker.keys():
-                count_by_Speaker[speaker] = 0
-            count_by_Speaker[speaker] += 1
+            speaker_dict[file] = speaker
+            if not speaker in count_by_speaker.keys():
+                count_by_speaker[speaker] = 0
+            count_by_speaker[speaker] += 1
 
     print('CMUA info generated: {}'.format(len(paths)))
-    return paths, speaker_Dict
+    return paths, speaker_dict
 
 def VCTK_Info_Load(path, num_per_speaker= None):
     path = os.path.join(path, 'wav48').replace('\\', '/')
 
     paths = []
-    speaker_Dict = {}
-    count_by_Speaker = {}
+    speaker_dict = {}
+    count_by_speaker = {}
     for root, _, files in os.walk(path):
         for file in files:
             shuffle(files)
             file = os.path.join(root, file).replace('\\', '/')
-            if not os.path.splitext(file)[1].upper() in using_Extension:
+            if not os.path.splitext(file)[1].upper() in using_extension:
                 continue
             speaker = 'VCTK.{}'.format(file.split('/')[-2].upper())
-            if not num_per_speaker is None and speaker in count_by_Speaker.keys() and count_by_Speaker[speaker] >= num_per_speaker:
+            if not num_per_speaker is None and speaker in count_by_speaker.keys() and count_by_speaker[speaker] >= num_per_speaker:
                 continue
             
             paths.append(file)
-            speaker_Dict[file] = speaker
-            if not speaker in count_by_Speaker.keys():
-                count_by_Speaker[speaker] = 0
-            count_by_Speaker[speaker] += 1
+            speaker_dict[file] = speaker
+            if not speaker in count_by_speaker.keys():
+                count_by_speaker[speaker] = 0
+            count_by_speaker[speaker] += 1
 
     print('VCTK info generated: {}'.format(len(paths)))
-    return paths, speaker_Dict
+    return paths, speaker_dict
 
 def Libri_Info_Load(path, num_per_speaker= None):
     paths = []
-    speaker_Dict = {}
-    count_by_Speaker = {}
+    speaker_dict = {}
+    count_by_speaker = {}
 
     walks = [x for x in os.walk(path)]
     shuffle(walks)
     for root, _, files in walks:
         for file in files:
             file = os.path.join(root, file).replace('\\', '/')
-            if not os.path.splitext(file)[1].upper() in using_Extension:
+            if not os.path.splitext(file)[1].upper() in using_extension:
                 continue
             speaker = 'Libri.{:04d}'.format(int(file.split('/')[-3].upper()))
-            if not num_per_speaker is None and speaker in count_by_Speaker.keys() and count_by_Speaker[speaker] >= num_per_speaker:
+            if not num_per_speaker is None and speaker in count_by_speaker.keys() and count_by_speaker[speaker] >= num_per_speaker:
                 continue
             
             paths.append(file)
-            speaker_Dict[file] = speaker
-            if not speaker in count_by_Speaker.keys():
-                count_by_Speaker[speaker] = 0
-            count_by_Speaker[speaker] += 1
+            speaker_dict[file] = speaker
+            if not speaker in count_by_speaker.keys():
+                count_by_speaker[speaker] = 0
+            count_by_speaker[speaker] += 1
 
     print('Libri info generated: {}'.format(len(paths)))
-    return paths, speaker_Dict
+    return paths, speaker_dict
 
 
 def VC1_Info_Load(path, num_per_speaker= None):
     paths = []
-    speaker_Dict = {}
-    tag_Dict = {}
-    count_by_Speaker = {}
+    speaker_dict = {}
+    tag_dict = {}
+    count_by_speaker = {}
     
     walks = [x for x in os.walk(path)]
     shuffle(walks)
     for root, _, files in walks:
         for file in files:
             file = os.path.join(root, file).replace('\\', '/')
-            if not os.path.splitext(file)[1].upper() in using_Extension:
+            if not os.path.splitext(file)[1].upper() in using_extension:
                 continue
             speaker = 'VC1.{}'.format(file.split('/')[-3].upper())
-            if not num_per_speaker is None and speaker in count_by_Speaker.keys() and count_by_Speaker[speaker] >= num_per_speaker:
+            if not num_per_speaker is None and speaker in count_by_speaker.keys() and count_by_speaker[speaker] >= num_per_speaker:
                 continue
             
             paths.append(file)
-            speaker_Dict[file] = speaker
-            tag_Dict[file] = file.split('/')[-2].upper()
-            if not speaker in count_by_Speaker.keys():
-                count_by_Speaker[speaker] = 0
-            count_by_Speaker[speaker] += 1
+            speaker_dict[file] = speaker
+            tag_dict[file] = file.split('/')[-2].upper()
+            if not speaker in count_by_speaker.keys():
+                count_by_speaker[speaker] = 0
+            count_by_speaker[speaker] += 1
 
     print('VC1 info generated: {}'.format(len(paths)))
-    return paths, speaker_Dict, tag_Dict
+    return paths, speaker_dict, tag_dict
 
 def VC2_Info_Load(path, num_per_speaker= None):
     paths = []
-    speaker_Dict = {}
-    tag_Dict = {}
-    count_by_Speaker = {}
+    speaker_dict = {}
+    tag_dict = {}
+    count_by_speaker = {}
     
     walks = [x for x in os.walk(path)]
     shuffle(walks)
     for root, _, files in walks:
         for file in files:
             file = os.path.join(root, file).replace('\\', '/')
-            if not os.path.splitext(file)[1].upper() in using_Extension:
+            if not os.path.splitext(file)[1].upper() in using_extension:
                 continue
             speaker = 'VC2.{}'.format(file.split('/')[-3].upper())
-            if not num_per_speaker is None and speaker in count_by_Speaker.keys() and count_by_Speaker[speaker] >= num_per_speaker:
+            if not num_per_speaker is None and speaker in count_by_speaker.keys() and count_by_speaker[speaker] >= num_per_speaker:
                 continue
             
             paths.append(file)
-            speaker_Dict[file] = speaker
-            tag_Dict[file] = file.split('/')[-2].upper()
-            if not speaker in count_by_Speaker.keys():
-                count_by_Speaker[speaker] = 0
-            count_by_Speaker[speaker] += 1
+            speaker_dict[file] = speaker
+            tag_dict[file] = file.split('/')[-2].upper()
+            if not speaker in count_by_speaker.keys():
+                count_by_speaker[speaker] = 0
+            count_by_speaker[speaker] += 1
     
     print('VC2 info generated: {}'.format(len(paths)))
-    return paths, speaker_Dict, tag_Dict
+    return paths, speaker_dict, tag_dict
 
 
 def VC1T_Info_Load(path, num_per_speaker= None):
     paths = []
-    speaker_Dict = {}
-    tag_Dict = {}
-    count_by_Speaker = {}
+    speaker_dict = {}
+    tag_dict = {}
+    count_by_speaker = {}
     
     walks = [x for x in os.walk(path)]
     shuffle(walks)
     for root, _, files in walks:
         for file in files:
             file = os.path.join(root, file).replace('\\', '/')
-            if not os.path.splitext(file)[1].upper() in using_Extension:
+            if not os.path.splitext(file)[1].upper() in using_extension:
                 continue
             speaker = 'VC1T.{}'.format(file.split('/')[-3].upper())
-            if not num_per_speaker is None and speaker in count_by_Speaker.keys() and count_by_Speaker[speaker] >= num_per_speaker:
+            if not num_per_speaker is None and speaker in count_by_speaker.keys() and count_by_speaker[speaker] >= num_per_speaker:
                 continue
             
             paths.append(file)
-            speaker_Dict[file] = speaker
-            tag_Dict[file] = file.split('/')[-2].upper()
-            if not speaker in count_by_Speaker.keys():
-                count_by_Speaker[speaker] = 0
-            count_by_Speaker[speaker] += 1
+            speaker_dict[file] = speaker
+            tag_dict[file] = file.split('/')[-2].upper()
+            if not speaker in count_by_speaker.keys():
+                count_by_speaker[speaker] = 0
+            count_by_speaker[speaker] += 1
     
     print('VC1T info generated: {}'.format(len(paths)))
-    return paths, speaker_Dict, tag_Dict
+    return paths, speaker_dict, tag_dict
 
 
-def Speaker_Index_Dict_Generate(speaker_Dict):
+def Speaker_Index_Dict_Generate(speaker_dict):
     return {
         speaker: index
-        for index, speaker in enumerate(sorted(set(speaker_Dict.values())))
+        for index, speaker in enumerate(sorted(set(speaker_dict.values())))
         }
 
-def Metadata_Generate(eval= False):
+def Metadata_Generate(speaker_index_dict, eval= False):
     pattern_Path = hp.Train.Eval_Pattern.Path if eval else hp.Train.Train_Pattern.Path
     metadata_File = hp.Train.Eval_Pattern.Metadata_File if eval else hp.Train.Train_Pattern.Metadata_File
 
     new_Metadata_Dict = {
-        'Spectrogram_Dim': hp.Sound.Spectrogram_Dim,
+        'N_FFT': hp.Sound.N_FFT,
         'Mel_Dim': hp.Sound.Mel_Dim,
         'Frame_Shift': hp.Sound.Frame_Shift,
         'Frame_Length': hp.Sound.Frame_Length,
         'Sample_Rate': hp.Sound.Sample_Rate,
-        'Max_Abs_Mel': hp.Sound.Max_Abs_Mel,
         'File_List': [],
-        'Audio_Length_Dict': {},
         'Mel_Length_Dict': {},
-        'Pitch_Length_Dict': {},
         'Speaker_ID_Dict': {},
         'Speaker_Dict': {},
         'Dataset_Dict': {},
-        'File_List_by_Speaker_Dict': {},
+        'File_List_by_speaker_dict': {},
+        'Text_Length_Dict': {},
+        'ID_Reference': {'Speaker': speaker_index_dict}
         }
 
-    files_TQDM = tqdm(
+    files_tqdm = tqdm(
         total= sum([len(files) for root, _, files in os.walk(pattern_Path)]),
         desc= 'Eval_Pattern' if eval else 'Train_Pattern'
         )
@@ -316,28 +319,26 @@ def Metadata_Generate(eval= False):
     for root, _, files in os.walk(pattern_Path):
         for file in files:
             with open(os.path.join(root, file).replace("\\", "/"), "rb") as f:
-                pattern_Dict = pickle.load(f)
+                pattern_dict = pickle.load(f)
 
             file = os.path.join(root, file).replace("\\", "/").replace(pattern_Path, '').lstrip('/')
             try:
                 if not all([
-                    key in ('Audio', 'Mel', 'Pitch', 'Speaker_ID', 'Speaker', 'Dataset')
-                    for key in pattern_Dict.keys()
+                    key in pattern_dict.keys()
+                    for key in ('Mel', 'Speaker_ID', 'Speaker', 'Dataset')
                     ]):
                     continue
-                new_Metadata_Dict['Audio_Length_Dict'][file] = pattern_Dict['Audio'].shape[0]
-                new_Metadata_Dict['Mel_Length_Dict'][file] = pattern_Dict['Mel'].shape[0]
-                new_Metadata_Dict['Pitch_Length_Dict'][file] = pattern_Dict['Pitch'].shape[0]
-                new_Metadata_Dict['Speaker_ID_Dict'][file] = pattern_Dict['Speaker_ID']
-                new_Metadata_Dict['Speaker_Dict'][file] = pattern_Dict['Speaker']
-                new_Metadata_Dict['Dataset_Dict'][file] = pattern_Dict['Dataset']
+                new_Metadata_Dict['Mel_Length_Dict'][file] = pattern_dict['Mel'].shape[0]
+                new_Metadata_Dict['Speaker_ID_Dict'][file] = pattern_dict['Speaker_ID']
+                new_Metadata_Dict['Speaker_Dict'][file] = pattern_dict['Speaker']
+                new_Metadata_Dict['Dataset_Dict'][file] = pattern_dict['Dataset']
                 new_Metadata_Dict['File_List'].append(file)
-                if not pattern_Dict['Speaker'] in new_Metadata_Dict['File_List_by_Speaker_Dict'].keys():
-                    new_Metadata_Dict['File_List_by_Speaker_Dict'][pattern_Dict['Speaker']] = []
-                new_Metadata_Dict['File_List_by_Speaker_Dict'][pattern_Dict['Speaker']].append(file)
+                if not pattern_dict['Speaker'] in new_Metadata_Dict['File_List_by_speaker_dict'].keys():
+                    new_Metadata_Dict['File_List_by_speaker_dict'][pattern_dict['Speaker']] = []
+                new_Metadata_Dict['File_List_by_speaker_dict'][pattern_dict['Speaker']].append(file)
             except:
                 print('File \'{}\' is not correct pattern file. This file is ignored.'.format(file))
-            files_TQDM.update(1)
+            files_tqdm.update(1)
 
     with open(os.path.join(pattern_Path, metadata_File.upper()).replace("\\", "/"), 'wb') as f:
         pickle.dump(new_Metadata_Dict, f, protocol= 4)
@@ -345,82 +346,108 @@ def Metadata_Generate(eval= False):
     print('Metadata generate done.')
 
 if __name__ == '__main__':
-    # argParser = argparse.ArgumentParser()
-    # argParser.add_argument("-lj", "--lj_path", required=False)
-    # argParser.add_argument("-bc2013", "--bc2013_path", required=False)
-    # argParser.add_argument("-cmua", "--cmua_path", required=False)
-    # argParser.add_argument("-vctk", "--vctk_path", required=False)
-    # argParser.add_argument("-libri", "--libri_path", required=False)
-    # argParser.add_argument("-vc1", "--vc1_path", required=False)
-    # argParser.add_argument("-vc2", "--vc2_path", required=False)
+    argParser = argparse.ArgumentParser()
+    argParser.add_argument("-hp", "--hyper_parameters", required=True, type= str)
+    argParser.add_argument("-lj", "--lj_path", required=False)
+    argParser.add_argument("-bc2013", "--bc2013_path", required=False)
+    argParser.add_argument("-cmua", "--cmua_path", required=False)
+    argParser.add_argument("-vctk", "--vctk_path", required=False)
+    argParser.add_argument("-libri", "--libri_path", required=False)
+    argParser.add_argument("-vc1", "--vc1_path", required=False)
+    argParser.add_argument("-vc2", "--vc2_path", required=False)
 
-    # argParser.add_argument("-vc1t", "--vc1_test_path", required=False)
+    argParser.add_argument("-vc1t", "--vc1_test_path", required=False)
     
-    # argParser.add_argument("-n", "--num_per_speaker", required= False, type= int)
-    # argParser.add_argument("-mw", "--max_worker", default= 2, required=False, type= int)
+    argParser.add_argument("-n", "--num_per_speaker", required= False, type= int)
+    argParser.add_argument("-mw", "--max_worker", default= 0, required=False, type= int)
 
-    # args = argParser.parse_args()
+    args = argParser.parse_args()
 
-    # train_Paths = []
-    # eval_Paths = []
-    # speaker_Dict = {}
-    # dataset_Dict = {}
-    # tag_Dict = {}
+    global hp
+    hp = Recursive_Parse(yaml.load(
+        open(args.hyper_parameters, encoding='utf-8'),
+        Loader=yaml.Loader
+        ))
 
-    # if not args.lj_path is None:
-    #     lj_Paths, lj_Speaker_Dict = LJ_Info_Load(path= args.lj_path, num_per_speaker= args.num_per_speaker)
-    #     train_Paths.extend(lj_Paths)
-    #     speaker_Dict.update(lj_Speaker_Dict)
-    #     dataset_Dict.update({path: 'LJ' for path in lj_Paths})
-    #     tag_Dict.update({path: '' for path in lj_Paths})
-    # if not args.bc2013_path is None:
-    #     bc2013_Paths, bc2013_Speaker_Dict = BC2013_Info_Load(path= args.bc2013_path, num_per_speaker= args.num_per_speaker)
-    #     train_Paths.extend(bc2013_Paths)
-    #     speaker_Dict.update(bc2013_Speaker_Dict)
-    #     dataset_Dict.update({path: 'BC2013' for path in bc2013_Paths})
-    #     tag_Dict.update({path: '' for path in bc2013_Paths})
-    # if not args.cmua_path is None:
-    #     cmua_Paths, cmua_Speaker_Dict = CMUA_Info_Load(path= args.cmua_path, num_per_speaker= args.num_per_speaker)
-    #     train_Paths.extend(cmua_Paths)
-    #     speaker_Dict.update(cmua_Speaker_Dict)
-    #     dataset_Dict.update({path: 'CMUA' for path in cmua_Paths})
-    #     tag_Dict.update({path: '' for path in cmua_Paths})
-    # if not args.vctk_path is None:
-    #     vctk_Paths, vctk_Speaker_Dict = VCTK_Info_Load(path= args.vctk_path, num_per_speaker= args.num_per_speaker)
-    #     train_Paths.extend(vctk_Paths)
-    #     speaker_Dict.update(vctk_Speaker_Dict)
-    #     dataset_Dict.update({path: 'VCTK' for path in vctk_Paths})
-    #     tag_Dict.update({path: '' for path in vctk_Paths})
-    # if not args.libri_path is None:
-    #     libri_Paths, libri_Speaker_Dict = Libri_Info_Load(path= args.libri_path, num_per_speaker= args.num_per_speaker)
-    #     train_Paths.extend(libri_Paths)
-    #     speaker_Dict.update(libri_Speaker_Dict)
-    #     dataset_Dict.update({path: 'Libri' for path in libri_Paths})
-    #     tag_Dict.update({path: '' for path in libri_Paths})
-    # if not args.vc1_path is None:
-    #     vc1_Paths, vc1_Speaker_Dict, vc1_Tag_Dict = VC1_Info_Load(path= args.vc1_path, num_per_speaker= args.num_per_speaker)
-    #     train_Paths.extend(vc1_Paths)
-    #     speaker_Dict.update(vc1_Speaker_Dict)
-    #     dataset_Dict.update({path: 'VC1' for path in vc1_Paths})
-    #     tag_Dict.update(vc1_Tag_Dict)
-    # if not args.vc2_path is None:
-    #     vc2_Paths, vc2_Speaker_Dict, vc2_Tag_Dict = VC2_Info_Load(path= args.vc2_path, num_per_speaker= args.num_per_speaker)
-    #     train_Paths.extend(vc2_Paths)
-    #     speaker_Dict.update(vc2_Speaker_Dict)
-    #     dataset_Dict.update({path: 'VC2' for path in vc2_Paths})
-    #     tag_Dict.update(vc2_Tag_Dict)
+    paths = []
+    speaker_dict = {}
+    dataset_dict = {}
+    tag_dict = {}
 
-    # if not args.vc1_test_path is None:
-    #     vc1t_Paths, vc1t_Speaker_Dict, vc1t_Tag_Dict = VC1T_Info_Load(path= args.vc1_test_path, num_per_speaker= args.num_per_speaker)
-    #     eval_Paths.extend(vc1t_Paths)
-    #     speaker_Dict.update(vc1t_Speaker_Dict)
-    #     dataset_Dict.update({path: 'VC1T' for path in vc1t_Paths})
-    #     tag_Dict.update(vc1t_Tag_Dict)
+    if not args.lj_path is None:
+        lj_paths, lj_speaker_dict = LJ_Info_Load(path= args.lj_path, num_per_speaker= args.num_per_speaker)
+        paths.extend(lj_paths)
+        speaker_dict.update(lj_speaker_dict)
+        dataset_dict.update({path: 'LJ' for path in lj_paths})
+        tag_dict.update({path: '' for path in lj_paths})
+    if not args.bc2013_path is None:
+        bc2013_paths, bc2013_speaker_dict = BC2013_Info_Load(path= args.bc2013_path, num_per_speaker= args.num_per_speaker)
+        paths.extend(bc2013_paths)
+        speaker_dict.update(bc2013_speaker_dict)
+        dataset_dict.update({path: 'BC2013' for path in bc2013_paths})
+        tag_dict.update({path: '' for path in bc2013_paths})
+    if not args.cmua_path is None:
+        cmua_paths, cmua_speaker_dict = CMUA_Info_Load(path= args.cmua_path, num_per_speaker= args.num_per_speaker)
+        paths.extend(cmua_paths)
+        speaker_dict.update(cmua_speaker_dict)
+        dataset_dict.update({path: 'CMUA' for path in cmua_paths})
+        tag_dict.update({path: '' for path in cmua_paths})
+    if not args.vctk_path is None:
+        vctk_paths, vctk_speaker_dict = VCTK_Info_Load(path= args.vctk_path, num_per_speaker= args.num_per_speaker)
+        paths.extend(vctk_paths)
+        speaker_dict.update(vctk_speaker_dict)
+        dataset_dict.update({path: 'VCTK' for path in vctk_paths})
+        tag_dict.update({path: '' for path in vctk_paths})
+    if not args.libri_path is None:
+        libri_paths, libri_speaker_dict = Libri_Info_Load(path= args.libri_path, num_per_speaker= args.num_per_speaker)
+        paths.extend(libri_paths)
+        speaker_dict.update(libri_speaker_dict)
+        dataset_dict.update({path: 'Libri' for path in libri_paths})
+        tag_dict.update({path: '' for path in libri_paths})
+    if not args.vc1_path is None:
+        vc1_paths, vc1_speaker_dict, vc1_Tag_Dict = VC1_Info_Load(path= args.vc1_path, num_per_speaker= args.num_per_speaker)
+        paths.extend(vc1_paths)
+        speaker_dict.update(vc1_speaker_dict)
+        dataset_dict.update({path: 'VC1' for path in vc1_paths})
+        tag_dict.update(vc1_Tag_Dict)
+    if not args.vc2_path is None:
+        vc2_paths, vc2_speaker_dict, vc2_Tag_Dict = VC2_Info_Load(path= args.vc2_path, num_per_speaker= args.num_per_speaker)
+        paths.extend(vc2_paths)
+        speaker_dict.update(vc2_speaker_dict)
+        dataset_dict.update({path: 'VC2' for path in vc2_paths})
+        tag_dict.update(vc2_Tag_Dict)
 
-    # if len(train_Paths) == 0:
-    #     raise ValueError('Total info count must be bigger than 0.')
+    eval_paths = []
+    if not args.vc1_test_path is None:
+        vc1t_paths, vc1t_speaker_dict, vc1t_Tag_Dict = VC1T_Info_Load(path= args.vc1_test_path, num_per_speaker= args.num_per_speaker)
+        eval_paths.extend(vc1t_paths)
+        speaker_dict.update(vc1t_speaker_dict)
+        dataset_dict.update({path: 'VC1T' for path in vc1t_paths})
+        tag_dict.update(vc1t_Tag_Dict)
 
-    # speaker_Index_Dict = Speaker_Index_Dict_Generate(speaker_Dict)
+    if len(paths) == 0:
+        raise ValueError('Total info count must be bigger than 0.')
+
+    speaker_index_dict = Speaker_Index_Dict_Generate(speaker_dict)
+
+    for path in tqdm(paths):
+        Pattern_File_Generate(
+            path,
+            speaker_index_dict[speaker_dict[path]],
+            speaker_dict[path],
+            dataset_dict[path],
+            tag_dict[path],
+            False
+            )
+    for path in tqdm(eval_paths):
+        Pattern_File_Generate(
+            path,
+            speaker_index_dict[speaker_dict[path]],
+            speaker_dict[path],
+            dataset_dict[path],
+            tag_dict[path],
+            True
+            )
 
     # with PE(max_workers = args.max_worker) as pe:
     #     for _ in tqdm(
@@ -429,16 +456,16 @@ if __name__ == '__main__':
     #             [
     #                 (
     #                     path,
-    #                     speaker_Index_Dict[speaker_Dict[path]],
-    #                     speaker_Dict[path],
-    #                     dataset_Dict[path],
-    #                     tag_Dict[path],
+    #                     speaker_index_dict[speaker_dict[path]],
+    #                     speaker_dict[path],
+    #                     dataset_dict[path],
+    #                     tag_dict[path],
     #                     False
     #                     )
-    #                 for path in train_Paths
+    #                 for path in paths
     #                 ]
     #             ),
-    #         total= len(train_Paths)
+    #         total= len(paths)
     #         ):
     #         pass
     #     for _ in tqdm(
@@ -447,21 +474,22 @@ if __name__ == '__main__':
     #             [
     #                 (
     #                     path,
-    #                     speaker_Index_Dict[speaker_Dict[path]],
-    #                     speaker_Dict[path],
-    #                     dataset_Dict[path],
-    #                     tag_Dict[path],
+    #                     speaker_index_dict[speaker_dict[path]],
+    #                     speaker_dict[path],
+    #                     dataset_dict[path],
+    #                     tag_dict[path],
     #                     True
     #                     )
-    #                 for path in eval_Paths
+    #                 for path in eval_paths
     #                 ]
     #             ),
-    #         total= len(eval_Paths)
+    #         total= len(eval_paths)
     #         ):
     #         pass
 
-    Metadata_Generate()
-    Metadata_Generate(eval= True)
+    Metadata_Generate(speaker_index_dict)
+    Metadata_Generate(speaker_index_dict, eval= True)
 
 # python Pattern_Generator.py -lj "D:/Pattern/ENG/LJSpeech" -bc2013 "D:/Pattern/ENG/BC2013" -cmua "D:/Pattern/ENG/CMUA" -vctk "D:/Pattern/ENG/VCTK" -libri "D:/Pattern/ENG/LibriTTS" -vc1 "D:/Pattern/ENG/VC1" -vc2 "D:/Pattern/ENG/VC2/aac" -vc1 "D:/Pattern/ENG/VC1_Test" -n 60
-# python Pattern_Generator.py -vc1 "D:/Pattern/ENG/VC1" -n 60
+# python Pattern_Generator.py -vc1 "D:/Pattern/ENG/VC1" -n 60  -vctk E:/Pattern/ENG/VCTK_Trim
+# python Pattern_Generator.py -hp Hyper_Parameters.yaml -lj E:/Pattern/ENG/LJSpeech -vctk E:/Pattern/ENG/VCTK_Trim -libri D:/Eng/LibriTTS/LibriTTS -vc1 D:/Eng/VoxCeleb/vox1 -vc2 D:/Eng/VoxCeleb/vox2 -vc1t D:/Eng/VoxCeleb/vox1_test -n 100

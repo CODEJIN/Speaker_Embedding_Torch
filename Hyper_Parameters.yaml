@@ -1,16 +1,11 @@
 Sound:
-    Spectrogram_Dim: 1025
+    N_FFT: 1024
     Mel_Dim: 80
     Frame_Length: 1024
     Frame_Shift: 256
-    Sample_Rate: 24000
-    Mel_F_Min: 125
-    Mel_F_Max: 7600
-    Max_Abs_Mel: 4
-    Confidence_Threshold: 0.6
-    Gaussian_Smoothing_Sigma: 0.0
-    Pitch_Min: 100.0
-    Pitch_Max: 500.0
+    Sample_Rate: 22050
+    Mel_F_Min: 0
+    Mel_F_Max: 8000
 
 GE2E:
     Embedding_Size: 256
@@ -21,12 +16,12 @@ GE2E:
 Train:
     Use_Pattern_Cache: false
     Train_Pattern:
-        Path: 'E:/24K.Pattern.No_Text.N60/Train'
+        Path: 'E:/22K.GE2E.N100/Train'
         Metadata_File: 'METADATA.PICKLE'
     Eval_Pattern:
-        Path: 'E:/24K.Pattern.No_Text.N60/Eval'
+        Path: 'E:/22K.GE2E.N100/Eval'
         Metadata_File: 'METADATA.PICKLE'
-    Num_Workers: 16
+    Num_Workers: 2
     Batch:
         Train:
             Speaker: 32

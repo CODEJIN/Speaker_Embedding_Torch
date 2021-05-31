@@ -18,10 +18,10 @@ def Mel_Generate(
     num_frequency,
     window_length,
     hop_length,
-    pre_emphasis= 0.97,    
+    pre_emphasis= 0.97,
     mel_fmin= 125,
     mel_fmax= 7600,
-    min_level_db= -100,   
+    min_level_db= -100,
     max_abs_value= 4.0
     ):
     pre_emphasis_audio = Preemphasis(audio, pre_emphasis= pre_emphasis)

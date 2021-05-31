@@ -16,16 +16,20 @@ class Logger(SummaryWriter):
         self.flush()
 
     def add_image_dict(self, image_dict, global_step, walltime= None):
-        for tag, (data, limit) in image_dict.items():
-            fig= plt.figure(figsize=(10, 5), dpi= 100)
+        for tag, (data, size, aspect, limit) in image_dict.items():
+            fig= plt.figure(figsize= size or (10, 5), dpi= 100)
             if data.ndim == 1:
-                plt.imshow([[0]], aspect='auto', origin='lower', cmap= matplotlib.colors.ListedColormap(['white']))
+                plt.imshow([[0]], aspect=aspect, origin='lower', cmap= matplotlib.colors.ListedColormap(['white']))
                 plt.plot(data)
                 plt.margins(x= 0)
                 if not limit is None:
                     plt.ylim(*limit)
             elif data.ndim == 2:
-                plt.imshow(data, aspect='auto', origin='lower', interpolation= 'none')
+                plt.imshow(data, aspect=aspect, origin='lower')
+                if not limit is None:
+                    plt.clim(*limit)
+            elif data.ndim == 3 and data.shape[2] in [3, 4]:    #RGB or RGBA
+                plt.imshow(data, aspect=aspect, origin='lower')
                 if not limit is None:
                     plt.clim(*limit)
             plt.colorbar()
@@ -38,10 +42,11 @@ class Logger(SummaryWriter):
             self.add_image(tag= tag, img_tensor= data, global_step= global_step, walltime= walltime, dataformats= 'HWC')
         self.flush()
 
-    def add_histogram_model(self, model, global_step=None, bins='tensorflow', walltime=None, max_bins=None, delete_keywords= []):
+    def add_histogram_model(self, model, model_label= None, global_step=None, bins='tensorflow', walltime=None, max_bins=None, delete_keywords= []):
         for tag, parameter in model.named_parameters():
-            x = tag
             tag = '/'.join([x for x in tag.split('.') if not x in delete_keywords])
+            if not model_label is None:
+                tag = '{}/{}'.format(model_label, tag)
 
             self.add_histogram(
                 tag= tag,
