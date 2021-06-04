@@ -10,11 +10,10 @@ Sound:
 GE2E:
     Embedding_Size: 256
     LSTM:
-        Sizes: 256
+        Size: 768
         Stacks: 3
 
 Train:
-    Use_Pattern_Cache: false
     Train_Pattern:
         Path: 'E:/22K.GE2E.N100/Train'
         Metadata_File: 'METADATA.PICKLE'
@@ -24,37 +23,39 @@ Train:
     Num_Workers: 2
     Batch:
         Train:
-            Speaker: 32
+            Speaker: 64
             Pattern_per_Speaker: 20
         Eval:
-            Speaker: 32
+            Speaker: 64
             Pattern_per_Speaker: 20
     Frame_Length:
         Min: 210
         Max: 270
     Inference:
         Samples: 5
-        Frame_Length: 96
-        Overlap_Length: 48
+        Frame_Length: 240
+        Overlap_Length: 120
     Learning_Rate:
-        Initial: 1.0e-3
+        Initial: 2.0e-3
         Base: 4000
     ADAM:
         Beta1: 0.9
         Beta2: 0.999
         Epsilon: 1.0e-6
-    Weight_Decay: 1.0e-6
+    Weight_Decay: 0.0 # 1.0e-6
     Gradient_Norm: 1.0
     Max_Step: 100000
     Checkpoint_Save_Interval: 1000
-    Logging_Interval: 100
-    Evaluation_Interval: 1000
+    Logging_Interval: 1
+    Evaluation_Interval: 500
     Inference_Interval: 1000
     Initial_Inference: false
 
 
 Inference_Batch_Size: null
-Checkpoint_Path: 'D:/SE.Results/24K.N60.WD/Checkpoint'
-Log_Path: 'D:/SE.Results/24K.N60.WD/Log'
-Use_Mixed_Precision: false  # apex is required.
+Checkpoint_Path: 'D:/SE.Results/22K.N100/Checkpoint'
+Log_Path: 'D:/SE.Results/22K.N100/Log'
+
+Use_Mixed_Precision: true
+Use_Multi_GPU: false
 Device: '0'

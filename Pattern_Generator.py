@@ -306,7 +306,7 @@ def Metadata_Generate(speaker_index_dict, eval= False):
         'Speaker_ID_Dict': {},
         'Speaker_Dict': {},
         'Dataset_Dict': {},
-        'File_List_by_speaker_dict': {},
+        'File_List_by_Speaker_Dict': {},
         'Text_Length_Dict': {},
         'ID_Reference': {'Speaker': speaker_index_dict}
         }

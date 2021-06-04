@@ -3,7 +3,7 @@ os.environ['FOR_DISABLE_CONSOLE_CTRL_HANDLER'] = 'T'    # This is ot prevent to 
 
 import torch
 import numpy as np
-import logging, yaml, os, sys, argparse, time
+import logging, yaml, os, sys, argparse, math
 from tqdm import tqdm
 from collections import defaultdict
 
@@ -61,21 +61,18 @@ class Trainer:
         train_dataset = Dataset(
             pattern_path= self.hp.Train.Train_Pattern.Path,
             metadata_file= self.hp.Train.Train_Pattern.Metadata_File,
-            pattern_per_speaker= self.hp.Train.Batch.Train.Pattern_per_Speaker,
-            use_cache= self.hp.Train.Use_Pattern_Cache
+            pattern_per_speaker= self.hp.Train.Batch.Train.Pattern_per_Speaker
             )
         dev_dataset = Dataset(
             pattern_path= self.hp.Train.Eval_Pattern.Path,
             metadata_file= self.hp.Train.Eval_Pattern.Metadata_File,
-            pattern_per_speaker= self.hp.Train.Batch.Eval.Pattern_per_Speaker,
-            use_cache= self.hp.Train.Use_Pattern_Cache
+            pattern_per_speaker= self.hp.Train.Batch.Eval.Pattern_per_Speaker
             )
         inference_dataset = Dataset(
             pattern_path= self.hp.Train.Eval_Pattern.Path,
             metadata_file= self.hp.Train.Eval_Pattern.Metadata_File,
             pattern_per_speaker= self.hp.Train.Batch.Eval.Pattern_per_Speaker,
             num_speakers= 50,   #Maximum number by tensorboard.
-            use_cache= self.hp.Train.Use_Pattern_Cache
             )
         logging.info('The number of train speakers = {}.'.format(len(train_dataset)))
         logging.info('The number of development speakers = {}.'.format(len(dev_dataset)))
@@ -90,8 +87,8 @@ class Trainer:
             overlap_length= self.hp.Train.Inference.Overlap_Length
             )
 
-        self.dataLoader_Dict = {}
-        self.dataLoader_Dict['Train'] = torch.utils.data.DataLoader(
+        self.dataloader_dict = {}
+        self.dataloader_dict['Train'] = torch.utils.data.DataLoader(
             dataset= train_dataset,
             sampler= torch.utils.data.DistributedSampler(train_dataset, shuffle= True) \
                      if self.hp.Use_Multi_GPU else \
@@ -101,7 +98,7 @@ class Trainer:
             num_workers= self.hp.Train.Num_Workers,
             pin_memory= True
             )
-        self.dataLoader_Dict['Dev'] = torch.utils.data.DataLoader(
+        self.dataloader_dict['Dev'] = torch.utils.data.DataLoader(
             dataset= dev_dataset,
             sampler= torch.utils.data.DistributedSampler(dev_dataset, shuffle= True) \
                      if self.num_gpus > 1 else \
@@ -111,7 +108,7 @@ class Trainer:
             num_workers= self.hp.Train.Num_Workers,
             pin_memory= True
             )
-        self.dataLoader_Dict['Inference'] = torch.utils.data.DataLoader(
+        self.dataloader_dict['Inference'] = torch.utils.data.DataLoader(
             dataset= inference_dataset,
             shuffle= True,
             collate_fn= inference_collater,
@@ -121,12 +118,7 @@ class Trainer:
             )
         
     def Model_Generate(self):
-        self.model = GE2E(
-            mel_dims= self.hp.Sound.Mel_Dim,
-            lstm_size= self.hp.GE2E.LSTM.Sizes,
-            lstm_stacks= self.hp.GE2E.LSTM.Stacks,
-            embedding_size= self.hp.GE2E.Embedding_Size,
-            ).to(self.device)
+        self.model = GE2E(self.hp).to(self.device)
         self.criterion = GE2E_Loss().to(self.device)
         self.optimizer = RAdam(
             params= self.model.parameters(),
@@ -178,7 +170,7 @@ class Trainer:
             self.scalar_dict['Train']['Loss/{}'.format(tag)] += loss
 
     def Train_Epoch(self):
-        for mels in self.dataLoader_Dict['Train']:
+        for mels in self.dataloader_dict['Train']:
             self.Train_Step(mels)
             
             if self.steps % self.hp.Train.Checkpoint_Save_Interval == 0:
@@ -218,11 +210,15 @@ class Trainer:
             self.scalar_dict['Evaluation']['Loss/{}'.format(tag)] += loss
 
     def Evaluation_Epoch(self):
-        logging.info('(Steps: {}) Start evaluation.'.format(self.steps))
+        logging.info('(Steps: {}) Start evaluation in GPU {}.'.format(self.steps, self.gpu_id))
 
         self.model.eval()
 
-        for step, mels in tqdm(enumerate(self.dataLoader_Dict['Dev'], 1), desc='[Evaluation]'):
+        for step, mels in tqdm(
+            enumerate(self.dataloader_dict['Dev'], 1),
+            desc='[Evaluation]',
+            total= math.ceil(len(self.dataloader_dict['Dev'].dataset) / self.hp.Train.Batch.Eval.Speaker / self.hp.Train.Batch.Eval.Pattern_per_Speaker)
+            ):
             self.Evaluation_Step(mels)
 
         self.scalar_dict['Evaluation'] = {
@@ -244,7 +240,7 @@ class Trainer:
             )
 
     def Inference_Epoch(self):
-        if self.gpu_id == 0:
+        if self.gpu_id != 0:
             return
 
         logging.info('(Steps: {}) Start inference.'.format(self.steps))
@@ -253,7 +249,7 @@ class Trainer:
 
         embeddings, speakers = zip(*[
             (self.Inference_Step(mels), speakers)
-            for mels, speakers in tqdm(self.dataLoader_Dict['Inference'], desc='[Inference]')
+            for mels, speakers in tqdm(self.dataloader_dict['Inference'], desc='[Inference]')
             ])
         embeddings = torch.cat(embeddings, dim= 0).cpu().numpy()
         speakers = [speaker for speaker_List in speakers for speaker in speaker_List]
@@ -342,7 +338,10 @@ class Trainer:
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('-s', '--steps', default= 0, type= int)
+    parser.add_argument('-hp', '--hyper_parameters', required= True, type= str)
+    parser.add_argument('-s', '--steps', default= 0, type= int)    
+    parser.add_argument('-p', '--port', default= 54321, type= int)
+    parser.add_argument('-r', '--local_rank', default= 0, type= int)
     args = parser.parse_args()
     
     hp = Recursive_Parse(yaml.load(

@@ -1,22 +1,14 @@
 import torch
 import numpy as np
-import yaml, pickle, os
+import pickle, os
 from random import sample
 
-
-from Arg_Parser import Recursive_Parse
-hp = Recursive_Parse(yaml.load(
-    open('Hyper_Parameters.yaml', encoding='utf-8'),
-    Loader=yaml.Loader
-    ))
-
-
-def Correction(mel, frame_Length):
-    if mel.shape[0] > frame_Length:
-        offset = np.random.randint(0, mel.shape[0] - frame_Length)
-        return mel[offset:offset + frame_Length]
+def Correction(mel, frame_length):
+    if mel.shape[0] > frame_length:
+        offset = np.random.randint(0, mel.shape[0] - frame_length)
+        return mel[offset:offset + frame_length]
     else:
-        pad = (frame_Length - mel.shape[0]) / 2
+        pad = (frame_length - mel.shape[0]) / 2
         return np.pad(
             mel,
             [[int(np.floor(pad)), int(np.ceil(pad))], [0, 0]],
@@ -30,50 +22,43 @@ class Dataset(torch.utils.data.Dataset):
         pattern_path,
         metadata_file,
         pattern_per_speaker,
-        num_speakers= None,
-        use_cache= False
+        num_speakers= None
         ):
-        self.pattern_Path = pattern_path
-        self.pattern_per_Speaker = pattern_per_speaker
-        self.use_Cache = use_cache
+        self.pattern_path = pattern_path
+        self.pattern_per_speaker = pattern_per_speaker
 
-        metadata_Dict = pickle.load(open(
+        metadata_dict = pickle.load(open(
             os.path.join(pattern_path, metadata_file).replace('\\', '/'), 'rb'
             ))
-        self.files_by_Speakers = {
+        self.files_by_speakers = {
             speaker: paths
-            for speaker, paths in metadata_Dict['File_List_by_Speaker_Dict'].items()
+            for speaker, paths in metadata_dict['File_List_by_Speaker_Dict'].items()
             if len(paths) >= pattern_per_speaker
             }
-        if not num_speakers is None and num_speakers < len(self.files_by_Speakers.keys()):
-            self.files_by_Speakers = {
-                speaker: self.files_by_Speakers[speaker]
-                for speaker in sample(list(self.files_by_Speakers.keys()), num_speakers)
+        if not num_speakers is None and num_speakers < len(self.files_by_speakers.keys()):
+            self.files_by_speakers = {
+                speaker: self.files_by_speakers[speaker]
+                for speaker in sample(list(self.files_by_speakers.keys()), num_speakers)
                 }
-        self.speakers = list(self.files_by_Speakers.keys())
+        self.speakers = list(self.files_by_speakers.keys())
 
         self.cache_Dict = {}
 
     def __getitem__(self, idx):
         speaker = self.speakers[idx]
-        files = self.files_by_Speakers[speaker]
+        files = self.files_by_speakers[speaker]
         files = sample(
-            population= self.files_by_Speakers[speaker],
-            k= self.pattern_per_Speaker
+            population= self.files_by_speakers[speaker],
+            k= self.pattern_per_speaker
             )
         
         patterns = []
         for file in files:
-            path = os.path.join(self.pattern_Path, file).replace('\\', '/')
-            if path in self.cache_Dict.keys():
-                patterns.append(self.cache_Dict[path])
-                continue
+            path = os.path.join(self.pattern_path, file).replace('\\', '/')
 
             mel = pickle.load(open(path, 'rb'))['Mel']
             pattern = mel, speaker
             patterns.append(pattern)
-            if self.use_Cache:
-                self.cache_Dict[path] = pattern
         
         return patterns
 
@@ -120,20 +105,3 @@ class Inference_Collater:
         mels = torch.FloatTensor(np.vstack(mels)).transpose(2, 1)   # [Speakers * Samples, Mel_dim, Time]
 
         return mels, speakers
-
-
-if __name__ == "__main__":    
-    dataLoader = torch.utils.data.DataLoader(
-        dataset= Dev_Dataset(),
-        shuffle= True,
-        collate_fn= Inference_Collater(),
-        # collate_fn= Dev_Collater(),
-        batch_size= hp.Train.Batch.Eval.Speaker,
-        num_workers= hp.Train.Num_Workers,
-        pin_memory= True
-        )
-
-    import time
-    for x in dataLoader:
-        print(x[0].shape)
-        time.sleep(2.0)
