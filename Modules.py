@@ -14,7 +14,7 @@ class GE2E(torch.nn.Sequential):
         self.add_module('ReLU', torch.nn.ReLU())
         
         for index in range(self.hp.GE2E.LSTM.Stacks):
-            module = Res_LSTM if index < self.hp.GE2E.LSTM.Stacks - 1 else torch.nn.LSTM
+            module = Res_LSTM if index < self.hp.GE2E.LSTM.Stacks - 1 else LSTM
             self.add_module('LSTM_{}'.format(index), module(
                 input_size= self.hp.GE2E.LSTM.Size,
                 hidden_size= self.hp.GE2E.LSTM.Size,
@@ -56,8 +56,12 @@ class Linear(torch.nn.Linear):
             torch.nn.init.zeros_(self.bias)
 
 class Res_LSTM(torch.nn.LSTM):
-    def forward(self, input, hx=None):
-        return super().forward(input, hx)[0] + input
+    def forward(self, input):
+        return super().forward(input)[0] + input
+
+class LSTM(torch.nn.LSTM):
+    def forward(self, input):
+        return super().forward(input)[0]
 
 
 class GE2E_Loss(torch.nn.Module):
@@ -102,6 +106,6 @@ class GE2E_Loss(torch.nn.Module):
         logits = torch.cat([within_cosine_similarities.unsqueeze(2), between_cosine_simiarities], dim = 2)
         logits = logits.view(embeddings.size(0), -1)    # [speaker * Pattern_per_Speaker, speaker]
         
-        labels = torch.zeros_like(logits)
+        labels = torch.zeros(embeddings.size(0), dtype= torch.long).to(embeddings.device)
         
         return self.cross_entroy_loss(logits, labels)

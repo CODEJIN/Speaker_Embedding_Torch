@@ -15,10 +15,10 @@ GE2E:
 
 Train:
     Train_Pattern:
-        Path: 'E:/22K.GE2E.N100/Train'
+        Path: '/data/22K.GE2E.N100/Train'
         Metadata_File: 'METADATA.PICKLE'
     Eval_Pattern:
-        Path: 'E:/22K.GE2E.N100/Eval'
+        Path: '/data/22K.GE2E.N100/Eval'
         Metadata_File: 'METADATA.PICKLE'
     Num_Workers: 2
     Batch:
@@ -49,13 +49,13 @@ Train:
     Logging_Interval: 1
     Evaluation_Interval: 500
     Inference_Interval: 1000
-    Initial_Inference: false
+    Initial_Inference: true
 
 
 Inference_Batch_Size: null
-Checkpoint_Path: 'D:/SE.Results/22K.N100/Checkpoint'
-Log_Path: 'D:/SE.Results/22K.N100/Log'
+Checkpoint_Path: '/data/results/GE2E/Checkpoint'
+Log_Path: '/data/results/GE2E/Log'
 
-Use_Mixed_Precision: true
+Use_Mixed_Precision: false
 Use_Multi_GPU: false
 Device: '0'
