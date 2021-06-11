@@ -49,7 +49,7 @@ class GE2E(torch.nn.Module):
         '''
         x = self.prenet(mels)   # [Batch, Emb_dim, Time]
         x = self.relu(x)
-        x = self.positional_embedding(x)    # [Batch, Emb_dim, Time]
+        x = self.positional_embedding(x, mel_lengths)    # [Batch, Emb_dim, Time]
         x = self.transformer(
             src= x.permute(2, 0, 1),
             src_key_padding_mask= Mask_Generate(mel_lengths)
@@ -97,11 +97,11 @@ class Positional_Embedding(torch.nn.Module):
             requires_grad= True
             )
 
-    def forward(self, x):
+    def forward(self, x, lengths):
         '''
         x: [Batch, Dim, Length]
         '''
-        x = x + self.alpha * self.pe[:, :, :x.size(2)]
+        x = x + self.alpha * self.pe[:, :, torch.arange(lengths.max())]
         x = self.dropout(x)
 
         return x
