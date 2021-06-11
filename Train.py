@@ -2,7 +2,6 @@ import os
 os.environ['FOR_DISABLE_CONSOLE_CTRL_HANDLER'] = 'T'    # This is ot prevent to be called Fortran Ctrl+C crash in Windows.
 
 import torch
-import numpy as np
 import logging, yaml, os, sys, argparse, math
 from tqdm import tqdm
 from collections import defaultdict
@@ -42,7 +41,7 @@ class Trainer:
         
         self.steps = steps
 
-        self.Datset_Generate()
+        self.Dataset_Generate()
         self.Model_Generate()
         self.Load_Checkpoint()
         self._Set_Distribution()
@@ -57,7 +56,7 @@ class Trainer:
             'Evaluation': Logger(os.path.join(self.hp.Log_Path, 'Evaluation')),
             }
 
-    def Datset_Generate(self):
+    def Dataset_Generate(self):
         train_dataset = Dataset(
             pattern_path= self.hp.Train.Train_Pattern.Path,
             metadata_file= self.hp.Train.Train_Pattern.Metadata_File,
@@ -82,9 +81,7 @@ class Trainer:
             max_frame_length= self.hp.Train.Frame_Length.Max
             )
         inference_collater = Inference_Collater(
-            samples= self.hp.Train.Inference.Samples,
-            frame_length= self.hp.Train.Inference.Frame_Length,
-            overlap_length= self.hp.Train.Inference.Overlap_Length
+            frame_length = self.hp.Train.Inference.Frame_Length
             )
 
         self.dataloader_dict = {}
@@ -138,13 +135,14 @@ class Trainer:
             logging.info(self.model)
 
 
-    def Train_Step(self, mels):
+    def Train_Step(self, mels, mel_lengths):
         loss_dict = {}
 
         mels = mels.to(self.device, non_blocking=True)
+        mel_lengths = mel_lengths.to(self.device, non_blocking=True)
 
         with torch.cuda.amp.autocast(enabled= self.hp.Use_Mixed_Precision):
-            embeddings = self.model(mels)
+            embeddings = self.model(mels, mel_lengths)
             loss_dict['Embedding'] = self.criterion(
                 embeddings,
                 self.hp.Train.Batch.Train.Pattern_per_Speaker
@@ -170,8 +168,8 @@ class Trainer:
             self.scalar_dict['Train']['Loss/{}'.format(tag)] += loss
 
     def Train_Epoch(self):
-        for mels in self.dataloader_dict['Train']:
-            self.Train_Step(mels)
+        for mels, mel_lengths in self.dataloader_dict['Train']:
+            self.Train_Step(mels, mel_lengths)
             
             if self.steps % self.hp.Train.Checkpoint_Save_Interval == 0:
                 self.Save_Checkpoint()
@@ -195,11 +193,13 @@ class Trainer:
                 return
     
     @torch.no_grad()
-    def Evaluation_Step(self, mels):
+    def Evaluation_Step(self, mels, mel_lengths):
         loss_dict = {}
 
         mels = mels.to(self.device, non_blocking=True)
-        embeddings = self.model(mels)
+        mel_lengths = mel_lengths.to(self.device, non_blocking=True)
+        
+        embeddings = self.model(mels, mel_lengths)
         loss_dict['Embedding'] = self.criterion(
             embeddings,
             self.hp.Train.Batch.Eval.Pattern_per_Speaker
@@ -214,12 +214,12 @@ class Trainer:
 
         self.model.eval()
 
-        for step, mels in tqdm(
+        for step, (mels, mel_lengths) in tqdm(
             enumerate(self.dataloader_dict['Dev'], 1),
             desc='[Evaluation]',
             total= math.ceil(len(self.dataloader_dict['Dev'].dataset) / self.hp.Train.Batch.Eval.Speaker / self.hp.Train.Batch.Eval.Pattern_per_Speaker)
             ):
-            self.Evaluation_Step(mels)
+            self.Evaluation_Step(mels, mel_lengths)
 
         self.scalar_dict['Evaluation'] = {
             tag: loss / step
@@ -233,10 +233,10 @@ class Trainer:
 
   
     @torch.no_grad()
-    def Inference_Step(self, mels):
+    def Inference_Step(self, mels, mel_lengths):
         return self.model(
             mels= mels.to(self.device, non_blocking=True),
-            samples= self.hp.Train.Inference.Samples
+            mel_lengths= mel_lengths.to(self.device, non_blocking=True)
             )
 
     def Inference_Epoch(self):
@@ -248,8 +248,8 @@ class Trainer:
         self.model.eval()
 
         embeddings, speakers = zip(*[
-            (self.Inference_Step(mels), speakers)
-            for mels, speakers in tqdm(self.dataloader_dict['Inference'], desc='[Inference]')
+            (self.Inference_Step(mels, mel_lengths), speakers)
+            for mels, mel_lengths, speakers in tqdm(self.dataloader_dict['Inference'], desc='[Inference]')
             ])
         embeddings = torch.cat(embeddings, dim= 0).cpu().numpy()
         speakers = [speaker for speaker_List in speakers for speaker in speaker_List]

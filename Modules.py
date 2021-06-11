@@ -1,72 +1,115 @@
 from argparse import Namespace
 import torch
+import math
 
-class GE2E(torch.nn.Sequential):
+class GE2E(torch.nn.Module):
     def __init__(self, hyper_parameters: Namespace):
         super().__init__()
         self.hp = hyper_parameters
 
-        self.add_module('Prenet', Linear(
-            in_features= self.hp.Sound.Mel_Dim,
-            out_features= self.hp.GE2E.LSTM.Size,
+        self.prenet = Conv1d(
+            in_channels= self.hp.Sound.Mel_Dim,
+            out_channels= self.hp.GE2E.Embedding_Size,
+            kernel_size= 1,
+            bias= True,
             w_init_gain= 'relu'
-            ))
-        self.add_module('ReLU', torch.nn.ReLU())
+            )
+        self.relu = torch.nn.ReLU()
         
-        for index in range(self.hp.GE2E.LSTM.Stacks):
-            module = Res_LSTM if index < self.hp.GE2E.LSTM.Stacks - 1 else LSTM
-            self.add_module('LSTM_{}'.format(index), module(
-                input_size= self.hp.GE2E.LSTM.Size,
-                hidden_size= self.hp.GE2E.LSTM.Size,
-                bias= True,
-                batch_first= True
-                ))
-        self.add_module('Linear', Linear(
-            in_features= self.hp.GE2E.LSTM.Size,
-            out_features= self.hp.GE2E.Embedding_Size,
+        self.positional_embedding = Positional_Embedding(
+            max_position= self.hp.GE2E.Positional_Encoding.Max_Position,
+            embedding_size= self.hp.GE2E.Embedding_Size,
+            dropout_rate= self.hp.GE2E.Positional_Encoding.Dropout_Rate
+            )
+        
+        self.transformer = torch.nn.TransformerEncoder(
+            encoder_layer= torch.nn.TransformerEncoderLayer(
+                d_model= self.hp.GE2E.Embedding_Size,
+                nhead= self.hp.GE2E.Transformer.Head,
+                dim_feedforward= self.hp.GE2E.Embedding_Size * 4,
+                dropout= self.hp.GE2E.Transformer.Dropout_Rate
+                ),
+            num_layers= self.hp.GE2E.Transformer.Num_Layers,
+            norm= torch.nn.LayerNorm(
+                normalized_shape= self.hp.GE2E.Embedding_Size
+                )
+            )
+
+        self.projection = Conv1d(
+            in_channels= self.hp.GE2E.Embedding_Size,
+            out_channels= self.hp.GE2E.Embedding_Size,
+            kernel_size= 1,
+            bias= True,
             w_init_gain= 'linear'
-            ))
+            )
 
-    def forward(self, mels, samples= 1):
+    def forward(self, mels: torch.Tensor, mel_lengths: torch.Tensor):
         '''
-        mels: [Batch * Sample, Mel_dim, Time]
+        mels: [Batch, Mel_dim, Time]
         '''
-        x = mels.transpose(2, 1)    # [Batch, Time, Mel_dim]
-        x = super().forward(x) # [Batch, Time, Emb]
-        x = x[:, -1, :] # [Batch, Emb]
-        
-        # if 'cuda' != x.device: torch.cuda.synchronize()
-
-        x = x.view(-1, samples, x.size(1)).mean(dim= 1) # [Batch, Samples, Emb_dim] -> [Batch, Emb_dim]
+        x = self.prenet(mels)   # [Batch, Emb_dim, Time]
+        x = self.relu(x)
+        x = self.positional_embedding(x)    # [Batch, Emb_dim, Time]
+        x = self.transformer(
+            src= x.permute(2, 0, 1),
+            src_key_padding_mask= Mask_Generate(mel_lengths)
+            ) # [Time, Batch, Emb_dim]
+        x = x.permute(1, 2, 0)[:, :, :1] # [Batch, Emb_dim, 1], Use only first time
+        x = self.projection(x).squeeze(2)   # [Batch, Emb_dim]
         x = torch.nn.functional.normalize(x, p=2, dim= 1)
 
         return x
 
-class Linear(torch.nn.Linear):
-    def __init__(self, w_init_gain= 'linear', *args, **kwagrs):
+class Conv1d(torch.nn.Conv1d):
+    def __init__(self, w_init_gain= 'relu', *args, **kwargs):
         self.w_init_gain = w_init_gain
-        super(Linear, self).__init__(*args, **kwagrs)
+        super(Conv1d, self).__init__(*args, **kwargs)
 
     def reset_parameters(self):
-        torch.nn.init.xavier_uniform_(
-            self.weight,
-            gain=torch.nn.init.calculate_gain(self.w_init_gain)
-            )
+        if self.w_init_gain in ['relu', 'leaky_relu']:
+            torch.nn.init.kaiming_uniform_(self.weight, nonlinearity= self.w_init_gain)
+        else:
+            torch.nn.init.xavier_uniform_(self.weight, gain= torch.nn.init.calculate_gain(self.w_init_gain))
         if not self.bias is None:
             torch.nn.init.zeros_(self.bias)
 
-class Res_LSTM(torch.nn.LSTM):
-    def forward(self, input):
-        return super().forward(input)[0] + input
+# https://pytorch.org/tutorials/beginner/transformer_tutorial.html
+# https://github.com/soobinseo/Transformer-TTS/blob/master/network.py
+class Positional_Embedding(torch.nn.Module):
+    def __init__(
+        self,
+        max_position: int,
+        embedding_size: int,
+        dropout_rate: float
+        ):
+        super().__init__()
+        self.dropout = torch.nn.Dropout(p= dropout_rate)
+        pe = torch.zeros(max_position, embedding_size)
+        position = torch.arange(0, max_position, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, embedding_size, 2).float() * (-math.log(10000.0) / embedding_size))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0).transpose(2, 1)
+        self.register_buffer('pe', pe)
 
-class LSTM(torch.nn.LSTM):
-    def forward(self, input):
-        return super().forward(input)[0]
+        self.alpha = torch.nn.Parameter(
+            data= torch.ones(1),
+            requires_grad= True
+            )
+
+    def forward(self, x):
+        '''
+        x: [Batch, Dim, Length]
+        '''
+        x = x + self.alpha * self.pe[:, :, :x.size(2)]
+        x = self.dropout(x)
+
+        return x
 
 
 class GE2E_Loss(torch.nn.Module):
     def __init__(self, init_weight= 10.0, init_bias= -5.0):
-        super(GE2E_Loss, self).__init__()
+        super().__init__()
         self.weight = torch.nn.Parameter(torch.tensor(init_weight))
         self.bias = torch.nn.Parameter(torch.tensor(init_bias))
 
@@ -109,3 +152,11 @@ class GE2E_Loss(torch.nn.Module):
         labels = torch.zeros(embeddings.size(0), dtype= torch.long).to(embeddings.device)
         
         return self.cross_entroy_loss(logits, labels)
+
+    
+def Mask_Generate(lengths, max_lengths= None):
+    '''
+    lengths: [Batch]
+    '''
+    sequence = torch.arange(max_lengths or torch.max(lengths))[None, :].to(lengths.device)
+    return sequence >= lengths[:, None]    # [Batch, Time]
