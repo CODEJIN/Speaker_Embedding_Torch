@@ -288,6 +288,9 @@ class Trainer:
         logging.info('Checkpoint loaded at {} steps.'.format(self.steps))
 
     def Save_Checkpoint(self):
+        if self.gpu_id != 0:
+            return
+            
         os.makedirs(self.hp.Checkpoint_Path, exist_ok= True)
 
         state_Dict = {
