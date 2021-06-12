@@ -13,7 +13,6 @@ class Tracer(torch.nn.Module):
             ))
 
         self.model = GE2E(self.hp)
-        print(self.model)
         self.Load_Checkpoint(path= checkpoint_path)
         self.model.eval()
 
@@ -42,5 +41,5 @@ if __name__ == '__main__':
     lengths = torch.LongTensor([400,])
     traced_model = torch.jit.trace(tracer, (x, lengths))
     os.makedirs('traced', exist_ok= True)
-    traced_model.save('./traced/ge2e_x.pts')
+    traced_model.save('./traced/ge2e.pts')
 

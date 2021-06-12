@@ -81,7 +81,9 @@ class Trainer:
             max_frame_length= self.hp.Train.Frame_Length.Max
             )
         inference_collater = Inference_Collater(
-            frame_length = self.hp.Train.Inference.Frame_Length
+            samples= self.hp.Train.Inference.Samples,
+            frame_length= self.hp.Train.Inference.Frame_Length,
+            overlap_length= self.hp.Train.Inference.Overlap_Length
             )
 
         self.dataloader_dict = {}
@@ -135,14 +137,13 @@ class Trainer:
             logging.info(self.model)
 
 
-    def Train_Step(self, mels, mel_lengths):
+    def Train_Step(self, features):
         loss_dict = {}
 
-        mels = mels.to(self.device, non_blocking=True)
-        mel_lengths = mel_lengths.to(self.device, non_blocking=True)
+        features = features.to(self.device, non_blocking=True)
 
         with torch.cuda.amp.autocast(enabled= self.hp.Use_Mixed_Precision):
-            embeddings = self.model(mels, mel_lengths)
+            embeddings = self.model(features)
             loss_dict['Embedding'] = self.criterion(
                 embeddings,
                 self.hp.Train.Batch.Train.Pattern_per_Speaker
@@ -168,8 +169,8 @@ class Trainer:
             self.scalar_dict['Train']['Loss/{}'.format(tag)] += loss
 
     def Train_Epoch(self):
-        for mels, mel_lengths in self.dataloader_dict['Train']:
-            self.Train_Step(mels, mel_lengths)
+        for features in self.dataloader_dict['Train']:
+            self.Train_Step(features)
             
             if self.steps % self.hp.Train.Checkpoint_Save_Interval == 0:
                 self.Save_Checkpoint()
@@ -193,13 +194,12 @@ class Trainer:
                 return
     
     @torch.no_grad()
-    def Evaluation_Step(self, mels, mel_lengths):
+    def Evaluation_Step(self, features):
         loss_dict = {}
 
-        mels = mels.to(self.device, non_blocking=True)
-        mel_lengths = mel_lengths.to(self.device, non_blocking=True)
+        features = features.to(self.device, non_blocking=True)
         
-        embeddings = self.model(mels, mel_lengths)
+        embeddings = self.model(features)
         loss_dict['Embedding'] = self.criterion(
             embeddings,
             self.hp.Train.Batch.Eval.Pattern_per_Speaker
@@ -214,12 +214,12 @@ class Trainer:
 
         self.model.eval()
 
-        for step, (mels, mel_lengths) in tqdm(
+        for step, features in tqdm(
             enumerate(self.dataloader_dict['Dev'], 1),
             desc='[Evaluation]',
             total= math.ceil(len(self.dataloader_dict['Dev'].dataset) / self.hp.Train.Batch.Eval.Speaker / self.hp.Train.Batch.Eval.Pattern_per_Speaker)
             ):
-            self.Evaluation_Step(mels, mel_lengths)
+            self.Evaluation_Step(features)
 
         self.scalar_dict['Evaluation'] = {
             tag: loss / step
@@ -233,10 +233,10 @@ class Trainer:
 
   
     @torch.no_grad()
-    def Inference_Step(self, mels, mel_lengths):
+    def Inference_Step(self, features):
         return self.model(
-            mels= mels.to(self.device, non_blocking=True),
-            mel_lengths= mel_lengths.to(self.device, non_blocking=True)
+            features= features.to(self.device, non_blocking=True),
+            samples= self.hp.Train.Inference.Samples
             )
 
     def Inference_Epoch(self):
@@ -248,11 +248,11 @@ class Trainer:
         self.model.eval()
 
         embeddings, speakers = zip(*[
-            (self.Inference_Step(mels, mel_lengths), speakers)
-            for mels, mel_lengths, speakers in tqdm(self.dataloader_dict['Inference'], desc='[Inference]')
+            (self.Inference_Step(features), speakers)
+            for features, speakers in tqdm(self.dataloader_dict['Inference'], desc='[Inference]')
             ])
         embeddings = torch.cat(embeddings, dim= 0).cpu().numpy()
-        speakers = [speaker for speaker_List in speakers for speaker in speaker_List]
+        speakers = [speaker for speaker_list in speakers for speaker in speaker_list]
 
         self.writer_dict['Evaluation'].add_embedding(
             embeddings,

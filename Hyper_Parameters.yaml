@@ -57,8 +57,8 @@ Train:
 
 
 Inference_Batch_Size: null
-Checkpoint_Path: '/data/results/GE2E_Transformer2/Checkpoint'
-Log_Path: '/data/results/GE2E_Transformer2/Log'
+Checkpoint_Path: '/data/results/GE2E/Checkpoint'
+Log_Path: '/data/results/GE2E/Log'
 
 Use_Mixed_Precision: false
 Use_Multi_GPU: true

@@ -16,7 +16,7 @@ class GE2E(torch.nn.Module):
             )
         self.relu = torch.nn.ReLU()
         
-        self.positional_embedding = Positional_Embedding(
+        self.positional_encoding = Positional_Encoding(
             max_position= self.hp.GE2E.Positional_Encoding.Max_Position,
             embedding_size= self.hp.GE2E.Embedding_Size,
             dropout_rate= self.hp.GE2E.Positional_Encoding.Dropout_Rate
@@ -43,18 +43,16 @@ class GE2E(torch.nn.Module):
             w_init_gain= 'linear'
             )
 
-    def forward(self, mels: torch.Tensor, mel_lengths: torch.Tensor):
+    def forward(self, features, samples= 1):
         '''
-        mels: [Batch, Mel_dim, Time]
+        features: [Batch * Sample, Mel_dim, Time]
         '''
-        x = self.prenet(mels)   # [Batch, Emb_dim, Time]
+        x = self.prenet(features)   # [Batch, Emb_dim, Time]
         x = self.relu(x)
-        x = self.positional_embedding(x, mel_lengths)    # [Batch, Emb_dim, Time]
-        x = self.transformer(
-            src= x.permute(2, 0, 1),
-            src_key_padding_mask= Mask_Generate(mel_lengths)
-            ) # [Time, Batch, Emb_dim]
+        x = self.positional_encoding(x)    # [Batch, Emb_dim, Time]
+        x = self.transformer(x.permute(2, 0, 1)) # [Time, Batch, Emb_dim]
         x = x.permute(1, 2, 0)[:, :, :1] # [Batch, Emb_dim, 1], Use only first time
+        x = x.view(-1, samples, x.size(1), x.size(2)).mean(dim= 1) # [Batch, Emb_dim, 1] -> [Batch, Emb_dim]
         x = self.projection(x).squeeze(2)   # [Batch, Emb_dim]
         x = torch.nn.functional.normalize(x, p=2, dim= 1)
 
@@ -75,7 +73,7 @@ class Conv1d(torch.nn.Conv1d):
 
 # https://pytorch.org/tutorials/beginner/transformer_tutorial.html
 # https://github.com/soobinseo/Transformer-TTS/blob/master/network.py
-class Positional_Embedding(torch.nn.Module):
+class Positional_Encoding(torch.nn.Module):
     def __init__(
         self,
         max_position: int,
@@ -97,14 +95,18 @@ class Positional_Embedding(torch.nn.Module):
             requires_grad= True
             )
 
-    def forward(self, x, lengths):
+    def forward(self, x):
         '''
         x: [Batch, Dim, Length]
         '''
-        x = x + self.alpha * self.pe[:, :, torch.arange(lengths.max())]
+        x = x + self.alpha * self.get_pe(x, self.pe)
         x = self.dropout(x)
 
         return x
+
+    @torch.jit.script
+    def get_pe(x, pe):
+        return pe[:, :, :x.size(2)]
 
 
 class GE2E_Loss(torch.nn.Module):
@@ -152,11 +154,3 @@ class GE2E_Loss(torch.nn.Module):
         labels = torch.zeros(embeddings.size(0), dtype= torch.long).to(embeddings.device)
         
         return self.cross_entroy_loss(logits, labels)
-
-    
-def Mask_Generate(lengths, max_lengths= None):
-    '''
-    lengths: [Batch]
-    '''
-    sequence = torch.arange(max_lengths or torch.max(lengths))[None, :].to(lengths.device)
-    return sequence >= lengths[:, None]    # [Batch, Time]

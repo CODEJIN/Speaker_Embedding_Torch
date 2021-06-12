@@ -3,23 +3,17 @@ import numpy as np
 import pickle, os
 from random import sample
 
-def Feature_Stack(features, frame_length):
-    new_features, new_lengths = [], []
-    for feature in features:
-        feature_length = feature.shape[0]
-
-        if feature_length > frame_length:
-            padding = np.zeros(shape=(frame_length // 10 + 1, feature.shape[1]))    # when mel = 700 and frame_length = 240, new feature will be 700 + 24 + 1 = 725
-        else:
-            padding = np.zeros(shape=(frame_length - feature_length + feature_length // 10 + 1, feature.shape[1])) # when mel = 150 and frame_length = 240, new feature will be 150 + 90 + 15 + 1 = 256
-        
-        feature = np.vstack([feature, padding])
+def Correction(feature, frame_length):
+    if feature.shape[0] > frame_length:
         offset = np.random.randint(0, feature.shape[0] - frame_length)
-        
-        new_features.append(feature[offset:offset + frame_length])
-        new_lengths.append(min(feature_length - offset, frame_length))
-
-    return np.stack(new_features), new_lengths
+        return feature[offset:offset + frame_length]
+    else:
+        pad = (frame_length - feature.shape[0]) / 2
+        return np.pad(
+            feature,
+            [[int(np.floor(pad)), int(np.ceil(pad))], [0, 0]],
+            mode= 'reflect'
+            )
 
 
 class Dataset(torch.utils.data.Dataset):
@@ -64,8 +58,8 @@ class Dataset(torch.utils.data.Dataset):
         for file in files:
             path = os.path.join(self.pattern_path, file).replace('\\', '/')
 
-            mel = pickle.load(open(path, 'rb'))['Mel']
-            pattern = mel, speaker
+            feature = pickle.load(open(path, 'rb'))['Mel']
+            pattern = feature, speaker
             patterns.append(pattern)
         
         return patterns
@@ -80,33 +74,35 @@ class Collater:
         self.max_frame_length = max_frame_length
 
     def __call__(self, batch):
-        features = [
-            feature
+        frame_length= np.random.randint(self.min_frame_length, self.max_frame_length + 1)
+        features = np.stack([
+            Correction(feature, frame_length)
             for pattern in batch
             for feature, _ in pattern
-            ]
-
-        frame_length = np.random.randint(self.min_frame_length, self.max_frame_length + 1)
-        features, feature_lengths = Feature_Stack(features, frame_length)
-
+            ], axis= 0)            
         features = torch.FloatTensor(features).transpose(2, 1)   # [Speakers * Pattern_per_Speaker, Mel_dim, Time]
-        feature_lengths = torch.LongTensor(feature_lengths)   # [Batch]
 
-        return features, feature_lengths
+        return features
 
 class Inference_Collater:
-    def __init__(self, frame_length):
+    def __init__(self, samples, frame_length, overlap_length):
+        self.samples = samples
         self.frame_length = frame_length
+        self.overlap_length = overlap_length
+        self.required_length = samples * (frame_length - overlap_length) + overlap_length
 
     def __call__(self, batch):
-        features, speakers = zip(*[
-            (feature, speaker)
-            for pattern in batch
-            for feature, speaker in pattern
-            ])
-        features, feature_lengths = Feature_Stack(features, self.frame_length)
+        features, speakers = [], []
+        for patterns in batch:
+            for feature, speaker in patterns:
+                feature = Correction(feature, self.required_length)
+                feature = np.stack([
+                    feature[index:index + self.frame_length]
+                    for index in range(0, self.required_length - self.overlap_length, self.frame_length - self.overlap_length)
+                    ])
+                features.append(feature)
+                speakers.append(speaker)
 
-        features = torch.FloatTensor(features).transpose(2, 1)   # [Speakers * Pattern_per_Speaker, Mel_dim, Time]
-        feature_lengths = torch.LongTensor(feature_lengths)   # [Batch]
+        features = torch.FloatTensor(np.vstack(features)).transpose(2, 1)   # [Speakers * Samples, feature_dim, Time]
 
-        return features, feature_lengths, speakers
+        return features, speakers
