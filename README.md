@@ -10,6 +10,8 @@ Jia, Y., Zhang, Y., Weiss, R. J., Wang, Q., Shen, J., Ren, F., ... & Wu, Y. (201
 Qian, K., Zhang, Y., Chang, S., Yang, X., & Hasegawa-Johnson, M. (2019). Zero-shot voice style transfer with only autoencoder loss. arXiv preprint arXiv:1905.05879.
 ```
 
+* The current version uses Transformer instead of LSTM. If you want an LSTM-based version, Please check [here](https://github.com/CODEJIN/Speaker_Embedding_Torch/tree/4df213c07650ce648c4e69e01ef663ce7d332fc3).
+
 # Requirements
 
 * torch >= 1.5.0
@@ -114,6 +116,6 @@ python Train.py -s <int>
 
 * This is the checkpoint of 100000 steps of 64 speaker (15 patterns per speaker) batchs (148.81 epochs).
 
-* [Checkpoint link](./Example_Results/Checkpoint/S_100000.pkl)
-* [Hyperparameter link](./Example_Results/Checkpoint/Hyper_Parameter.yaml)
+* [Checkpoint link](./Example_Results/Checkpoint/S_100000.pt)
+* [Hyperparameter link](./Example_Results/Checkpoint/Hyper_Parameters.yaml)
 
