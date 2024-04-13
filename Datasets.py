@@ -1,17 +1,20 @@
 import torch
 import numpy as np
-import pickle, os
+import pickle, os, logging, asyncio
 from random import sample
+from argparse import Namespace
+
+from Pattern_Generator import Pattern_Generate
 
 def Correction(feature, frame_length):
-    if feature.shape[0] > frame_length:
-        offset = np.random.randint(0, feature.shape[0] - frame_length)
-        return feature[offset:offset + frame_length]
+    if feature.shape[1] > frame_length:
+        offset = np.random.randint(0, feature.shape[1] - frame_length)
+        return feature[:, offset:offset + frame_length]
     else:
-        pad = (frame_length - feature.shape[0]) / 2
+        pad = (frame_length - feature.shape[1]) / 2
         return np.pad(
             feature,
-            [[int(np.floor(pad)), int(np.ceil(pad))], [0, 0]],
+            [[0, 0], [int(np.floor(pad)), int(np.ceil(pad))]],
             mode= 'reflect'
             )
 
@@ -44,8 +47,6 @@ class Dataset(torch.utils.data.Dataset):
                 }
         self.speakers = list(self.files_by_speakers.keys())
 
-        self.cache_Dict = {}
-
     def __getitem__(self, idx):
         speaker = self.speakers[idx]
         files = self.files_by_speakers[speaker]
@@ -74,13 +75,13 @@ class Collater:
         self.max_frame_length = max_frame_length
 
     def __call__(self, batch):
-        frame_length= np.random.randint(self.min_frame_length, self.max_frame_length + 1)
+        frame_length= np.random.randint(self.min_frame_length, self.max_frame_length + 1)        
         features = np.stack([
             Correction(feature, frame_length)
             for pattern in batch
             for feature, _ in pattern
             ], axis= 0)            
-        features = torch.FloatTensor(features).transpose(2, 1)   # [Speakers * Pattern_per_Speaker, Mel_dim, Time]
+        features = torch.FloatTensor(features)  # [Speakers * Pattern_per_Speaker, Mel_dim, Time]
 
         return features
 
@@ -97,12 +98,12 @@ class Inference_Collater:
             for feature, speaker in patterns:
                 feature = Correction(feature, self.required_length)
                 feature = np.stack([
-                    feature[index:index + self.frame_length]
+                    feature[:, index:index + self.frame_length]
                     for index in range(0, self.required_length - self.overlap_length, self.frame_length - self.overlap_length)
                     ])
                 features.append(feature)
                 speakers.append(speaker)
 
-        features = torch.FloatTensor(np.vstack(features)).transpose(2, 1)   # [Speakers * Samples, feature_dim, Time]
+        features = torch.FloatTensor(np.vstack(features))   # [Speakers * Samples, feature_dim, Time]
 
         return features, speakers
