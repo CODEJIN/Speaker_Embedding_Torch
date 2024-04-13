@@ -25,7 +25,7 @@ def reduce_tensor(tensor, num_gpus):
     rt /= num_gpus
     return rt
 
-def init_distributed(rank, num_gpus, dist_backend, dist_url):
+def init_distributed(rank, num_gpus, dist_backend):
     assert torch.cuda.is_available(), "Distributed mode requires CUDA."
 
     print('> initializing distributed for rank {} out '
@@ -33,15 +33,7 @@ def init_distributed(rank, num_gpus, dist_backend, dist_url):
 
     # Set cuda device so everything is done on the right GPU.
     torch.cuda.set_device(rank % torch.cuda.device_count())
-
-    init_method = 'tcp://'
-    master_ip = os.getenv('MASTER_ADDR', 'localhost')
-    master_port = os.getenv('MASTER_PORT', '6000')
-    init_method += master_ip + ':' + master_port
-    torch.distributed.init_process_group(backend='nccl',
-                                         world_size=num_gpus,
-                                         rank=rank,
-                                         init_method=init_method)
+    torch.distributed.init_process_group(backend= dist_backend or 'nccl')
 
 def _flatten_dense_tensors(tensors):
     """Flatten dense tensors into a contiguous 1D buffer. Assume tensors are of
@@ -91,7 +83,7 @@ def apply_gradient_allreduce(module):
     for p in module.state_dict().values():
         if not torch.is_tensor(p):
             continue
-        dist.broadcast(p, 0)
+        dist.broadcast(p.contiguous(), 0)
 
     def allreduce_params():
         if(module.needs_reduction):

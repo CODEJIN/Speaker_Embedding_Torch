@@ -128,3 +128,6 @@ dmypy.json
 # Pyre type checker
 .pyre/
 ffmpeg.exe
+
+data/
+*.pickle

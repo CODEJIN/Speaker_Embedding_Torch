@@ -119,22 +119,22 @@ class Trainer:
     def Model_Generate(self):
         self.model = GE2E(self.hp).to(self.device)
         self.criterion = GE2E_Loss().to(self.device)
-        self.optimizer = RAdam(
+        self.optimizer = torch.optim.AdamW(
             params= self.model.parameters(),
             lr= self.hp.Train.Learning_Rate.Initial,
             betas= (self.hp.Train.ADAM.Beta1, self.hp.Train.ADAM.Beta2),
-            eps= self.hp.Train.ADAM.Epsilon,
-            weight_decay= self.hp.Train.Weight_Decay
+            eps= self.hp.Train.ADAM.Epsilon
             )
-        self.scheduler = Modified_Noam_Scheduler(
+        self.scheduler = torch.optim.lr_scheduler.ExponentialLR(
             optimizer= self.optimizer,
-            base= self.hp.Train.Learning_Rate.Base,
+            gamma= self.hp.Train.Learning_Rate.Decay,
+            last_epoch= -1
             )
 
         self.scaler = torch.cuda.amp.GradScaler(enabled= self.hp.Use_Mixed_Precision)
 
-        if self.gpu_id == 0:
-            logging.info(self.model)
+        # if self.gpu_id == 0:
+        #     logging.info(self.model)
 
 
     def Train_Step(self, features):
@@ -160,7 +160,6 @@ class Trainer:
 
         self.scaler.step(self.optimizer)
         self.scaler.update()
-        self.scheduler.step()
         self.steps += 1
         self.tqdm.update(1)
 
@@ -172,15 +171,18 @@ class Trainer:
         for features in self.dataloader_dict['Train']:
             self.Train_Step(features)
             
+            if self.steps % math.ceil(len(self.dataloader_dict['Train'].dataset) / self.hp.Train.Batch.Train.Speaker) == 0:
+                self.scheduler.step()
+
             if self.steps % self.hp.Train.Checkpoint_Save_Interval == 0:
                 self.Save_Checkpoint()
 
-            if self.steps % self.hp.Train.Logging_Interval == 0:
+            if self.steps % self.hp.Train.Logging_Interval == 0 and self.gpu_id == 0:
                 self.scalar_dict['Train'] = {
                     tag: loss / self.hp.Train.Logging_Interval
                     for tag, loss in self.scalar_dict['Train'].items()
                     }
-                self.scalar_dict['Train']['Learning_Rate'] = self.scheduler.get_last_lr()
+                self.scalar_dict['Train']['Learning_Rate'] = self.scheduler.get_last_lr()[0]
                 self.writer_dict['Train'].add_scalar_dict(self.scalar_dict['Train'], self.steps)
                 self.scalar_dict['Train'] = defaultdict(float)
 
@@ -217,7 +219,7 @@ class Trainer:
         for step, features in tqdm(
             enumerate(self.dataloader_dict['Dev'], 1),
             desc='[Evaluation]',
-            total= math.ceil(len(self.dataloader_dict['Dev'].dataset) / self.hp.Train.Batch.Eval.Speaker / self.hp.Train.Batch.Eval.Pattern_per_Speaker)
+            total= math.ceil(len(self.dataloader_dict['Dev'].dataset) / self.hp.Train.Batch.Eval.Speaker)
             ):
             self.Evaluation_Step(features)
 
@@ -293,7 +295,7 @@ class Trainer:
             
         os.makedirs(self.hp.Checkpoint_Path, exist_ok= True)
 
-        state_Dict = {
+        state_dict = {
             'Model': self.model.state_dict(),
             'Optimizer': self.optimizer.state_dict(),
             'Scheduler': self.scheduler.state_dict(),
@@ -301,7 +303,7 @@ class Trainer:
             }
 
         torch.save(
-            state_Dict,
+            state_dict,
             os.path.join(self.hp.Checkpoint_Path, 'S_{}.pt'.format(self.steps).replace('\\', '/'))
             )
 
@@ -358,7 +360,6 @@ if __name__ == '__main__':
             rank= int(os.getenv('RANK', '0')),
             num_gpus= int(os.getenv("WORLD_SIZE", '1')),
             dist_backend= 'nccl',
-            dist_url= 'tcp://127.0.0.1:{}'.format(args.port)
             )
     trainer = Trainer(hp_path= args.hyper_parameters, steps= args.steps)
     trainer.Train()
